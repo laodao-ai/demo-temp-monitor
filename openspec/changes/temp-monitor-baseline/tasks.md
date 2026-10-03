@@ -18,17 +18,17 @@
 ## 3. 业务逻辑与 HTTP
 
 - [ ] 3.1 实现 `internal/service`：ID 正则校验，注册 / 注销 / 上报，入库成功且温度 > 阈值时写 WARN（`over-temperature alarm`，字段 `device_id` / `temperature_c` / `threshold_c`）。单元测试用 memstore 和写入缓冲区的 slog handler，覆盖等于阈值不告警、未注册不告警、存储出错不告警（用一个总是返回错误的测试替身）、连续两条各告警一次 〔DEV-01, DEV-02, DEV-03, ING-01, ING-02, ALM-01, ALM-02, ALM-03, ALM-04〕
-- [ ] 3.2 实现 `internal/httpapi`：三个路由，`MaxBytesReader` 1 MiB，`temperature_c` 解码到 `*float64`，错误映射到 400 / 404 / 409 / 500，5xx 响应体固定为 `{"error": "internal error"}` 并写 ERROR 日志。用 `httptest` 加 memstore 做单元测试，覆盖 DEV-01..03 与 ING-01..03 的全部场景 〔DEV-01, DEV-02, DEV-03, ING-01, ING-02, ING-03, RUN-04〕
+- [ ] 3.2 实现 `internal/httpapi`：三个路由，`MaxBytesReader` 1 MiB，`temperature_c` 解码到 `*float64`，存储调用使用从请求 context 派生的 5 秒超时（design「外部依赖的超时与回滚」），错误映射到 400 / 404 / 409 / 500，5xx 响应体固定为 `{"error": "internal error"}` 并写 ERROR 日志。用 `httptest` 加 memstore 做单元测试，覆盖 DEV-01..03 与 ING-01..03 的全部场景 〔DEV-01, DEV-02, DEV-03, ING-01, ING-02, ING-03, RUN-04〕
 - [ ] 3.3 实现 `cmd/temp-monitor`：读配置、建 pgxpool、5 秒 ping、`CheckSchema`、启动 INFO（监听地址和阈值，不含连接串）、`ReadHeaderTimeout`、SIGINT/SIGTERM 时 `Shutdown`（5 秒）并关闭连接池；任一前置条件失败就退出 1 〔RUN-02, RUN-03, RUN-04, RUN-06〕
 - [ ] 3.4 写端到端连真库测试（`//go:build integration`）：`httptest.Server` + `httpapi` + `pgstore` + 缓冲区 logger，按 TST-08 的五步验证，设备 ID 用 `it-` 前缀并清理 〔TST-08, TST-09, ALM-01〕
 - [ ] 3.5 手动验证不需要数据库的启动失败路径：缺 `TM_DATABASE_URL`、`TM_ALARM_THRESHOLD_C=abc`、连接串指向无人监听的端口（口令写 `s3cret-xyz`），三种情况都退出 1，stderr 指出原因且不含 `s3cret-xyz`；贴出输出 〔RUN-03, RUN-04〕
 
 ## 4. 脚本
 
-- [ ] 4.1 写 `scripts/db-reset.sh`：带参数时退出 2；读 `TM_DATABASE_URL`（环境变量优先，否则 source `config/local.env`），都没有时退出 1；`current_database()` 不等于 `temp_monitor_demo` 时退出 3；在单个事务里执行 drop → migrations（按文件名字典序）→ seed；不打印连接串 〔DB-01, DB-02, DB-03, RUN-04〕
+- [ ] 4.1 写 `scripts/db-reset.sh`：带参数时退出 2；读 `TM_DATABASE_URL`（环境变量优先，否则 source `config/local.env`），都没有时退出 1；`current_database()` 不等于 `temp_monitor_demo` 时退出 3；在单个事务里执行 drop → migrations（按文件名字典序）→ seed；psql 设 `PGCONNECT_TIMEOUT=5`；不打印连接串 〔DB-01, DB-02, DB-03, RUN-04〕
 - [ ] 4.2 写 `scripts/test.sh`：按 design「Test Runner」实现层选择、`-count=1`、unit 层 `-race`、integration 层 `-tags integration -run '^TestIntegration'`、jq 计数口径、失败输出打到 stderr、汇总行、退出码 `min(M,125)`、零执行时退出 1、缺 `go` / `jq` 时退出 1 〔TST-01, TST-02, TST-03, TST-04〕
 - [ ] 4.3 在仓库的临时副本（scratchpad，不提交）里逐条验证 test.sh 的计数场景：编译失败计入 M、无测试文件的包不计入 K、子测试计数、`-run` 全部过滤掉时退出 1、构造 130 个失败子测试时退出码为 125、非法参数退出 2；把每条场景的实测输出贴进实现记录 〔TST-01, TST-03, TST-04〕
-- [ ] 4.4 写 `scripts/simulate.sh [rounds]`：按 design「Simulator」实现；验证服务未运行时退出 1 〔ING-04〕
+- [ ] 4.4 写 `scripts/simulate.sh [rounds]`：按 design「Simulator」实现，`TM_LISTEN_ADDR` 按「环境变量 > `config/local.env` > 缺省」取值，curl 带 `--max-time 5`；验证服务未运行时退出 1 〔ING-04〕
 
 ## 5. 文档
 

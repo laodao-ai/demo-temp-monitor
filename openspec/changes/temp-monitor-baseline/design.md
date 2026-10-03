@@ -139,15 +139,37 @@ CREATE INDEX readings_device_id_idx ON readings (device_id, id);
 - **生命周期**：设备只有「已注册」一种持久状态。注销即删行，读数随之级联删除。同一 ID 可再次注册，作为新设备，没有历史读数。
 - **ID 前缀约定**：种子数据用 `demo-`，模拟脚本用 `sim-`，连真库测试用 `it-<随机>`，三者互不干扰。
 
-### v_old / v_new（TG-04）
+### v_old / v_new（TG-04，D-2 完整列清单）
 
-| 对象 | v_old | v_new |
-|---|---|---|
-| `devices` | 不存在 | 如上 |
-| `readings` | 不存在 | 如上 |
-| `readings_device_id_idx` | 不存在 | 如上 |
+v_old 中两张表都不存在，所以下表每一列的 v_old 都是「不存在」。
+
+| 表.列 | 类型 | 约束 | 默认值 | nullable |
+|---|---|---|---|---|
+| `devices.id` | `text` | PRIMARY KEY；CHECK `id ~ '^[a-z0-9-]{1,64}$'` | 无 | NOT NULL（主键隐含） |
+| `devices.registered_at` | `timestamptz` | — | `now()` | NOT NULL |
+| `readings.id` | `bigint` | PRIMARY KEY；`GENERATED ALWAYS AS IDENTITY` | 自增序列 | NOT NULL（主键隐含） |
+| `readings.device_id` | `text` | FOREIGN KEY → `devices(id)` ON DELETE CASCADE | 无 | NOT NULL |
+| `readings.temperature_c` | `double precision` | — | 无 | NOT NULL |
+| `readings.recorded_at` | `timestamptz` | — | `now()` | NOT NULL |
+| 索引 `readings_device_id_idx` | btree `(device_id, id)` | 非唯一 | — | — |
 
 全新库，没有存量数据要迁移。回退方式是 `db/drop.sql`。
+
+### 外部依赖的超时与回滚（D-4）
+
+| 调用点 | 超时 | 超时后的行为 |
+|---|---|---|
+| 服务启动时建连并 ping | 5 秒 | 退出 1 |
+| 服务启动时 `CheckSchema` | 5 秒 | 退出 1 |
+| 每个 HTTP 请求里的存储调用 | 5 秒：handler 以请求 context 派生 `context.WithTimeout(5s)` 传给 service | 回 500 `{"error": "internal error"}`，写 ERROR |
+| `db-reset.sh` 和 `simulate.sh` 里的 psql / curl | psql 用 `PGCONNECT_TIMEOUT=5` 限制建连；curl 用 `--max-time 5` | 脚本以非零退出 |
+| 连真库测试建连 | 5 秒 | `t.Fatal` |
+
+写操作的回滚路径：
+
+- **服务**：每个写操作都是单条 `INSERT` 或 `DELETE`，由 PostgreSQL 保证原子性。超时或出错时语句整体不生效，不存在半写状态，不需要应用层回滚。
+- **重建脚本**：`db-reset.sh` 用 `--single-transaction` 加 `ON_ERROR_STOP=1`，任一步失败时整体回滚（见 DB-03）。
+- **连真库测试**：用 `t.Cleanup` 删除自己创建的 `it-` 设备，读数随之级联删除。
 
 ## API
 
@@ -244,7 +266,7 @@ CREATE INDEX readings_device_id_idx ON readings (device_id, id);
 
 `scripts/simulate.sh [rounds]`，`rounds` 缺省 10。
 
-1. 目标地址是 `http://${TM_LISTEN_ADDR:-127.0.0.1:8080}`。
+1. 目标地址是 `http://<TM_LISTEN_ADDR>`。`TM_LISTEN_ADDR` 的取值方式和服务一致：先看环境变量，没有就读 `config/local.env`，再没有就用 `127.0.0.1:8080`。这样脚本和服务不会因为配置写在不同地方而对不上。
 2. 注册 `sim-01`、`sim-02`、`sim-03`。返回 409 视为已注册，继续执行。
 3. 每轮每台设备上报一条读数，轮间 `sleep 0.2`。
    - `sim-01`、`sim-02` 的读数是 18.0–35.0 的随机值，用 `$RANDOM` 生成，保留 1 位小数。
@@ -269,6 +291,7 @@ CREATE INDEX readings_device_id_idx ON readings (device_id, id);
 | 启动时表不存在 | 启动失败，退出 1 | ERROR，提示先跑 `scripts/db-reset.sh` |
 | 监听端口被占用 | 启动失败，退出 1 | ERROR |
 | 运行中库断开 | 当次请求回 500；pgxpool 自动重连 | ERROR |
+| 单次存储调用超过 5 秒 | context 取消，当次请求回 500，语句不生效 | ERROR |
 | 同一 ID 并发注册 | 一个 201，其余 409，由主键约束保证 | — |
 | 注销与上报并发 | 见上方并发序列图，两种结果都不留孤儿读数 | — |
 | handler panic | net/http 对单个请求做 recover 并断开该连接，进程不退出 | net/http 默认错误日志 |
