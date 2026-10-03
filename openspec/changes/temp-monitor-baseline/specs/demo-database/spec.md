@@ -8,7 +8,7 @@
 
 `scripts/db-reset.sh` SHALL 先查询实际连接到的库名（`current_database()`），只有库名精确等于 `temp_monitor_demo` 时才继续。库名不符时 MUST 打印实际库名、不做任何修改，并以退出码 3 结束。脚本不接受参数，带参数时打印用法并以退出码 2 结束。
 
-守卫与重建 MUST 使用同一个连接串 `TM_DATABASE_URL`。[spec-review-amendment] 退出码 SHALL 为：0 成功；1 缺 `TM_DATABASE_URL`；2 用法错误；3 库名不符；4 psql 失败（连不上、SQL 出错、等锁超时）。脚本 MUST 自己捕获 psql 的退出状态再映射，不透传。[spec-review-amendment]
+守卫与重建 MUST 使用同一个连接串 `TM_DATABASE_URL`。[spec-review-amendment] 退出码 SHALL 为：0 成功；1 缺 `TM_DATABASE_URL` 或 `config/local.env` 有文法错误；2 用法错误；3 库名不符；4 psql 失败（连不上、SQL 出错、等锁超时）。脚本 MUST 自己捕获 psql 的退出状态再映射，不透传。[spec-review-amendment]
 
 #### Scenario: 指向别的库
 
@@ -35,7 +35,7 @@
 #### Scenario: 连不上库 [spec-review-amendment]
 
 - **WHEN** `TM_DATABASE_URL` 指向一个没有服务在监听的端口，执行 `scripts/db-reset.sh`
-- **THEN** 退出码为 4，stderr 说明 psql 失败
+- **THEN** 退出码为 4，stderr 为固定文案 `cannot connect to database` 加下一步提示，不含 psql 的原始错误文本
 
 ### Requirement: DB-02 一条命令重建演示库
 
