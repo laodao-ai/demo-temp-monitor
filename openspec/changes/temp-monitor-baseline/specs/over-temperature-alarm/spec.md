@@ -13,6 +13,7 @@
 - **WHEN** 阈值为 50.0，已注册设备 `sensor-01` 上报 `{"temperature_c": 55.0}`
 - **THEN** 上报响应状态码为 201
 - **AND** 日志中新增恰好一条 WARN，消息为 `over-temperature alarm`，`device_id=sensor-01`，`temperature_c=55`，`threshold_c=50`
+- **AND** 断言按日志的结构化字段比较：msg、`device_id` 相等，数值字段按数值相等，不按整行文本比较 [spec-review-amendment]
 
 #### Scenario: 阈值可配置
 
@@ -36,6 +37,8 @@
 ### Requirement: ALM-03 上报失败不告警
 
 上报因设备未注册、请求不合法或存储出错而失败时，系统 SHALL NOT 写超温告警日志，即使请求里的温度高于阈值。
+
+说明：存储调用超过 5 秒时结果未知，语句可能已提交。已提交时，读数已入库，响应仍为 500，且没有告警日志。[spec-review-amendment]
 
 #### Scenario: 未注册设备上报高温
 

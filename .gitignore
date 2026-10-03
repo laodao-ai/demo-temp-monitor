@@ -3,3 +3,6 @@
 
 # IDE 配置可能含本机路径，不进公开仓
 /.idea/
+
+# outside-voice 的 context 与输出只留本机，不进仓
+**/.outside-voice/

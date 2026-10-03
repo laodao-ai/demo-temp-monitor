@@ -8,6 +8,8 @@
 
 系统 SHALL 接受 `POST /devices`，请求体为 `{"id": "<设备 ID>"}`。设备 ID MUST 匹配 `^[a-z0-9-]{1,64}$`。注册成功返回 201，响应体含 `id` 和服务端生成的 `registered_at`（RFC 3339 时间）。
 
+请求体的读取方式与 ING-03 相同：请求体超过 1 MiB、合法 JSON 后面跟其它非空白内容、请求体为空时，MUST 返回 400；未知字段忽略。[spec-review-amendment]
+
 #### Scenario: 注册新设备
 
 - **WHEN** 客户端发送 `POST /devices`，请求体 `{"id": "sensor-01"}`，且 `sensor-01` 尚未注册
@@ -62,6 +64,6 @@
 
 #### Scenario: 并发注册
 
-- **WHEN** 20 个并发调用同时以 `race-01` 注册，此前 `race-01` 未注册
+- **WHEN** 20 个并发调用同时以一个未注册的 ID 注册 [spec-review-amendment]
 - **THEN** 恰好 1 个调用成功，其余 19 个返回「已存在」
-- **AND** 存储中只有一个 `race-01`
+- **AND** 存储中只有一个该 ID 的设备 [spec-review-amendment]

@@ -38,14 +38,16 @@ decision_hash: e3796fd55b09
 - **C3 pgx v5 可拉取** — 验证方式：`go list -m -versions github.com/jackc/pgx/v5`（GOPROXY=goproxy.cn）；**证据锚**：最新 `v5.11.0`。
 - **C4 提交历史只含 noreply 身份，远端为 private** — 验证方式：`git log --all --format='%ae %ce' | sort -u` 只输出 noreply 一行；`gh repo view` 输出 `{"visibility":"PRIVATE","branch":"main"}`。
 - **C5 远端开发库当前未接入** — 验证方式：仓内无 `.pg-ops/`；**证据锚**：人 2026-10-03 确认「后续再配置」。
-- **C6 远端库形态由 pg-dev-init / pg-dev-server 决定** — 验证方式：读 skill 文档；**证据锚**：`~/.claude/skills/pg-dev-init/SKILL.md:43`（owner 角色与库同名）、`:46`（CREATEDB 默认不给）；`~/.claude/skills/pg-dev-server/SKILL.md:183`（PgBouncer transaction 池 6432、session 池 7432，均只监听 127.0.0.1，经 SSH 隧道访问）。⇒ 示例连接串指向 `127.0.0.1:7432`（session 池），pgx 的预编译语句在 session 池下可用。
+- **C6 远端库形态由 pg-dev-init / pg-dev-server 决定** — 验证方式：读 skill 文档；**证据锚**：`~/.claude/skills/pg-dev-init/SKILL.md:42`（owner 角色与库同名）[spec-review-amendment]、`:46`（CREATEDB 默认不给）；`~/.claude/skills/pg-dev-server/SKILL.md:183`（PgBouncer transaction 池 6432、session 池 7432，均只监听 127.0.0.1，经 SSH 隧道访问）。⇒ 示例连接串指向 `127.0.0.1:7432`（session 池），pgx 的预编译语句在 session 池下可用。
 
 ## 接受的边角
 
 - **连接串误指 transaction 池（6432）时 pgx 预编译语句可能报错** — 概率低（示例配置写的是 7432）、影响小（报错明确，改端口即恢复）、完美成本中（代码里切 exec mode 要额外测两种池）；**为何接受**：示例配置注释写明用 session 池，代码不做兼容。
 - **连真库层在远端库就绪前恒失败** — 概率 1（D2 的直接后果）、影响仅限「暂时打不了 tag」；**为何接受**：人明确的约定「连不上库时失败，不跳过」，这正是想要的行为。
 - **契约测试在共享演示库上并发跑时与人工操作撞 ID** — 概率极低（`it-` 前缀加随机后缀）、影响为单次测试失败；**为何接受**：不为此加专用测试库。
-- **`config/local.env` 里的口令含 shell 特殊字符时 bash `source` 出错** — 概率低、影响为脚本启动即报错；**为何接受**：示例配置注释要求连接串里的口令做 URL 编码。
+- （已由设计评审 D5 消除：脚本不再 `source` 配置文件）[spec-review-amendment]
+- **`psql "$TM_DATABASE_URL"` 的命令行在本机 `ps` 里可见** — 概率低、影响限本机、完美成本为改用 `PG*` 环境变量拆分连接串；**为何接受**：单人开发机，命令行不属于输出。[spec-review-amendment]
+- **测试进程被杀或超时后可能残留 `it-` 设备** — 概率低、影响为演示库里多几台 `it-` 设备；**为何接受**：`scripts/db-reset.sh` 能清掉。[spec-review-amendment]
 
 > 术语旁注（项目无 `openspec/CONTEXT.md`，按规则记于此）：「单元测试 / 单元层」= 不带 build tag、只用内存假实现的 `go test`；「连真库的测试 / 连真库层」= 带 `integration` build tag、连 `TM_DATABASE_URL` 的测试；「读数」= 一条温度上报记录（reading）。
 

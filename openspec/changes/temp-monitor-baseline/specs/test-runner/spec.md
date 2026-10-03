@@ -6,7 +6,7 @@
 
 ### Requirement: TST-01 统一入口与层选择
 
-仓库 SHALL 提供 `scripts/test.sh [unit|integration|all]`，参数缺省为 `all`。`unit` 只跑单元层，`integration` 只跑连真库层，`all` 依次跑两层并合并计数。其它参数 MUST 打印用法并以退出码 2 结束。每次执行 MUST 真正运行测试，不使用测试缓存。
+仓库 SHALL 提供 `scripts/test.sh [unit|integration|all]`，参数缺省为 `all`。`unit` 只跑单元层，`integration` 只跑连真库层，`all` 依次跑两层，两层分别计数后求和。[spec-review-amendment] 其它参数 MUST 打印用法并以退出码 2 结束。每次执行 MUST 真正运行测试，不使用测试缓存。
 
 #### Scenario: 缺省跑两层
 
@@ -27,6 +27,12 @@
 
 脚本 SHALL 在 stdout 的最后一行输出 `N passed, M failed, K skipped (T total)`，其中 T = N + M + K。失败用例的输出 SHALL 打印到 stderr。
 
+以下内容也 SHALL 打印到 stderr：[spec-review-amendment]
+
+- 编译失败的原因，即 `build-output` 事件的 `Output`；[spec-review-amendment]
+- 贡献了包级失败的包，其包级输出；[spec-review-amendment]
+- `go test` 自身的 stderr，原样透传，不经 jq。[spec-review-amendment]
+
 #### Scenario: 全部通过
 
 - **WHEN** 单元层有 40 个用例且全部通过，执行 `scripts/test.sh unit`
@@ -37,14 +43,26 @@
 - **WHEN** 有 1 个用例失败
 - **THEN** stderr 含该用例的名字和输出，stdout 最后一行的 M 为 1
 
+#### Scenario: 编译失败的原因 [spec-review-amendment]
+
+- **WHEN** 某个测试文件有编译错误，执行 `scripts/test.sh unit`
+- **THEN** stderr 含编译器给出的错误行
+
 ### Requirement: TST-03 计数口径不得假绿
 
-计数 SHALL 只统计用例级（含子测试）的 pass、fail、skip 结果。某个包整体失败但没有用例级失败时，M MUST 加 1，例如编译失败、vet 失败、测试进程异常退出或超时。没有测试文件的包 MUST NOT 计入 K。
+计数 SHALL 只统计用例级（含子测试）的 pass、fail、skip 结果。某个包整体失败但没有用例级失败时，M MUST 加 1，例如编译失败、vet 失败、测试进程异常退出或超时。这一判定按「层 + 包」进行。[spec-review-amendment] 没有测试文件的包 MUST NOT 计入 K。
+
+某层 `go test` 以非零状态退出、而该层 M 为 0 时，该层 M MUST 加 1，并在 stderr 打印 `go test exited with status <n> but reported no failure`。[spec-review-amendment]
 
 #### Scenario: 测试包编译失败
 
 - **WHEN** 某个测试文件有编译错误，执行 `scripts/test.sh unit`
 - **THEN** 汇总行的 M 至少为 1，退出码非零
+
+#### Scenario: go test 进程被杀 [spec-review-amendment]
+
+- **WHEN** 执行 `scripts/test.sh unit` 期间，`go test` 进程被 `kill -9` 杀掉
+- **THEN** 退出码非零
 
 #### Scenario: 没有测试文件的包
 
@@ -60,9 +78,10 @@
 
 退出码规则如下：
 
-- 已执行用例数 N + M 大于 0 时，脚本 SHALL 以 `min(M, 125)` 作为退出码。
-- N + M 等于 0 时，脚本 MUST 在 stderr 打印 `no tests executed`，并以退出码 1 结束。
-- 缺少 `go` 或 `jq` 时，脚本 MUST 报错并以退出码 1 结束。
+- 所选的每一层各自计数。每一层的已执行用例数 N + M 都大于 0 时，脚本 SHALL 以 `min(M, 125)` 作为退出码，M 为各层之和。[spec-review-amendment]
+- 任一所选层的 N + M 等于 0 时，脚本 MUST 在 stderr 打印 `no tests executed in <层名> layer`，并以退出码 1 结束。`<层名>` 为 `unit` 或 `integration`。汇总行照常输出。[spec-review-amendment]
+- 缺少 `go` 或 `jq` 时，脚本 MUST 报错并以退出码 1 结束，不输出汇总行。[spec-review-amendment]
+- 解析 `go test -json` 输出的 jq 失败时，脚本 MUST 在 stderr 报错并以退出码 1 结束，不输出汇总行。[spec-review-amendment]
 
 #### Scenario: 无失败
 
@@ -81,8 +100,14 @@
 
 #### Scenario: 一个用例都没执行
 
-- **WHEN** 所选层的用例被全部过滤掉，或全部跳过
+- **WHEN** 所选层的用例被全部过滤掉，或顶层用例全部跳过（没有子测试）[spec-review-amendment]
 - **THEN** stderr 含 `no tests executed`，退出码为 1
+
+#### Scenario: all 模式下连真库层零用例 [spec-review-amendment]
+
+- **WHEN** 连真库测试文件的 build tag 写错，单元层有 40 个用例且全部通过，执行 `scripts/test.sh all`
+- **THEN** stderr 含 `no tests executed in integration layer`，退出码为 1
+- **AND** stdout 最后一行仍是汇总行
 
 ### Requirement: TST-05 单元层不依赖数据库
 
@@ -124,7 +149,8 @@
 - 向不存在的设备写读数返回「不存在」；
 - 读数按写入顺序返回；
 - 同一 ID 并发注册只成功一次；
-- 并发写读数后条数正确。
+- 并发写读数后条数正确；
+- 并发注销与上报后没有残留读数，上报结果只可能是成功或不存在。[spec-review-amendment]
 
 #### Scenario: 两层用同一套契约
 

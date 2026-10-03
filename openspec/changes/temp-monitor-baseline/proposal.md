@@ -34,7 +34,7 @@ temp-monitor 是一个温度监控教学示例，仓里目前只有 openspec 工
 ## Impact
 
 - 技术栈命中 **TG-01（后端服务变更）**，下游选用领域清单 `backend` + `backend-go`。
-- 新增依赖：`github.com/jackc/pgx/v5`（Go module 依赖）；运行与测试需要 Go 1.27、psql、jq、curl、bash。
+- 新增依赖：`github.com/jackc/pgx/v5`（Go module 依赖）；运行与测试需要 Go 1.27、psql、jq、curl、bash、C 编译器（`-race` 需要）。[spec-review-amendment]
 - 外部系统：远端开发库（PostgreSQL 18，经 PgBouncer session 池 + SSH 隧道访问），本 change 不配置它，只消费它。
 - Go module 名：`github.com/laodao-ai/temp-monitor`。
 
@@ -93,7 +93,7 @@ temp-monitor 是一个温度监控教学示例，仓里目前只有 openspec 工
 |---|---|
 | 远端库按 pg-dev-init 缺省建成：owner 角色与库同名，session 池端口 7432，经 SSH 隧道在本机 `127.0.0.1` 可达 | 只需改 `config/local.env` 里的连接串，代码不变 |
 | owner 角色能在演示库里建表、删自己建的表 | `db-reset.sh` 失败；需要服务器侧给权限 |
-| 本机有 Go 1.27、psql、jq、curl、bash | 测试脚本或重建脚本启动即报缺工具 |
+| 本机有 Go 1.27、psql、jq、curl、bash、C 编译器 | 测试脚本或重建脚本启动即报缺工具 |
 
 ## Decisions
 

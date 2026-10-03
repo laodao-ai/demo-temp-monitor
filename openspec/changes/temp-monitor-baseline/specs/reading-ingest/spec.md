@@ -42,7 +42,7 @@
 
 ### Requirement: ING-03 校验上报请求
 
-请求不合法时，系统 SHALL 返回 400，响应体含 `error` 字段，并且 MUST NOT 持久化读数。不合法的情形包括：请求体不是合法 JSON；缺少 `temperature_c`；`temperature_c` 不是数字；路径中的设备 ID 不匹配 `^[a-z0-9-]{1,64}$`；请求体超过 1 MiB。
+请求不合法时，系统 SHALL 返回 400，响应体含 `error` 字段，并且 MUST NOT 持久化读数。不合法的情形包括：请求体不是合法 JSON；合法 JSON 后面跟其它非空白内容；请求体为空；缺少 `temperature_c`；`temperature_c` 不是数字；路径中的设备 ID 不匹配 `^[a-z0-9-]{1,64}$`；请求体超过 1 MiB。[spec-review-amendment] 请求体中的未知字段 SHALL 被忽略。[spec-review-amendment]
 
 #### Scenario: 缺少温度字段
 
@@ -56,14 +56,20 @@
 
 #### Scenario: 请求体超过 1 MiB
 
-- **WHEN** `sensor-01` 已注册，请求体大小超过 1 MiB
-- **THEN** 响应状态码为 400，存储中读数条数不变
+- **WHEN** `sensor-01` 已注册，请求体大小超过 1 MiB，分别用两种方式构造：单个超大的 JSON 值；合法 JSON 后跟超量的尾随空白 [spec-review-amendment]
+- **THEN** 两种请求的响应状态码都为 400，响应体为 `{"error": "request body too large"}`，存储中读数条数不变 [spec-review-amendment]
+
+#### Scenario: 合法 JSON 后面跟其它内容 [spec-review-amendment]
+
+- **WHEN** `sensor-01` 已注册，请求体为 `{"temperature_c": 23.5}garbage`
+- **THEN** 响应状态码为 400，响应体为 `{"error": "invalid JSON body"}`，存储中读数条数不变
 
 ### Requirement: ING-04 模拟设备上报脚本
 
 仓内 SHALL 提供 `scripts/simulate.sh [rounds]`，`rounds` 缺省为 10。它直接调用服务的 HTTP 接口模拟设备上报，不经过 MQTT 或真实硬件。
 
-- 目标地址为 `http://<TM_LISTEN_ADDR>`。`TM_LISTEN_ADDR` 的取值来源与服务相同：环境变量优先，其次是 `config/local.env`，都没有时为 `127.0.0.1:8080`。
+- `rounds` MUST 是正整数，否则打印用法并以退出码 2 结束。[spec-review-amendment]
+- 目标地址为 `http://<TM_LISTEN_ADDR>`。`TM_LISTEN_ADDR` 的取值来源与服务相同：环境变量优先，其次是 `config/local.env`，都没有时为 `127.0.0.1:8080`。读文件时按 RUN-01 的文法逐行解析，不 `source`。`TM_LISTEN_ADDR` 以 `:` 开头时，目标主机用 `127.0.0.1`。[spec-review-amendment]
 - 先注册 `sim-01`、`sim-02`、`sim-03`；注册返回 409 视为已注册并继续。
 - 之后每轮每台设备各上报一条读数。`sim-01`、`sim-02` 的温度在 18.0–35.0 之间，`sim-03` 的温度在 50.5–60.0 之间。
 - 任一请求失败或状态码不是预期值时，MUST 打印该请求与响应并以退出码 1 结束。
@@ -84,3 +90,8 @@
 
 - **WHEN** 缺省地址上没有服务在监听，执行 `scripts/simulate.sh`
 - **THEN** 脚本打印失败的请求，退出码为 1
+
+#### Scenario: rounds 非法 [spec-review-amendment]
+
+- **WHEN** 执行 `scripts/simulate.sh 0` 或 `scripts/simulate.sh abc`
+- **THEN** 脚本打印用法，退出码为 2，不发送任何请求
