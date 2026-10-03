@@ -1,2 +1,5 @@
 /openspec/issues/.recorder.lock
 /openspec/.ff0-ack
+
+# IDE 配置可能含本机路径，不进公开仓
+/.idea/
