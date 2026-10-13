@@ -21,8 +21,8 @@ decision_hash: e3796fd55b09
 - **D5 设备 ID 由客户端注册时给出，格式 `[a-z0-9-]{1,64}`** — 依据：人 2026-10-03 同意推荐；模拟脚本用固定 ID 最直接。**砍掉的候选**：服务端生成 ID（模拟脚本要回读保存 ID，多一步）。
 - **D6 注销 = 硬删除，读数级联删；同 ID 可重新注册；未注册/已注销设备上报返回 404** — 依据：人 2026-10-03 同意推荐。**砍掉的候选**：软删除（要处理唯一约束和状态过滤，教学示例不需要）。
 - **D7 全局告警阈值，配置读取，默认 50.0°C；读数严格大于阈值时，入库成功后打一条 WARN 日志，不去重** — 依据：人 2026-10-03 同意推荐。**砍掉的候选**：按设备阈值（注册接口多字段）；去重/滞回（超出「写日志即可」）。
-- **D8 仓托管在 GitHub `laodao-ai/temp-monitor`，先 private；作者邮箱用 GitHub noreply** — 依据：人 2026-10-03 指示建到 laodao-ai 下，并确认 1–4 步与 private。已执行：本仓 `user.email=13449619+laodaocheney@users.noreply.github.com`，首个提交重写为 `6a0adbb`，已推 main。**砍掉的候选**：立即 public（审计前内容先公开）。
-- **D9 Go module 名 `github.com/laodao-ai/temp-monitor`** — 依据：仓归属已定（D8），import 路径与 `go install` 可直接用。**砍掉的候选**：无组织前缀的 `temp-monitor`（原为避免泄露组织名，D8 后不再需要）。
+- **D8 仓托管在 GitHub `laodao-ai/demo-temp-monitor`，先 private；作者邮箱用 GitHub noreply** — 依据：人 2026-10-03 指示建到 laodao-ai 下，并确认 1–4 步与 private。已执行：本仓 `user.email=13449619+laodaocheney@users.noreply.github.com`，首个提交重写为 `6a0adbb`，已推 main。**砍掉的候选**：立即 public（审计前内容先公开）。 2026-10-07 仓名由 `temp-monitor` 改为 `demo-temp-monitor`（作者定：教学项目仓统一 `demo-` 前缀），D9 的 module 名随之改；项目名、`cmd/temp-monitor`、本 change 名不变。
+- **D9 Go module 名 `github.com/laodao-ai/demo-temp-monitor`** — 依据：仓归属已定（D8），import 路径与 `go install` 可直接用。**砍掉的候选**：无组织前缀的 `temp-monitor`（原为避免泄露组织名，D8 后不再需要）。
 - **D10 `.idea/` 进 `.gitignore`** — 依据：人 2026-10-03 同意；IDE 配置可能含本机路径。
 - **D11 重建库 = 显式删本项目的表再跑迁移和种子，不删 schema、不删库** — 依据：owner 角色默认无 CREATEDB（C6），删库不可行；「库 owner 能删 public schema」在 PG 文档 ddl-schemas 页无正面陈述，且远端库未就绪无法实测（C5），删表只依赖「建表者即表 owner」。**砍掉的候选**：`DROP SCHEMA public CASCADE`（前提未验证）、`DROP OWNED BY CURRENT_USER`（会顺带收回服务器给该角色的授权）、`DROP DATABASE`（无权限）。
 

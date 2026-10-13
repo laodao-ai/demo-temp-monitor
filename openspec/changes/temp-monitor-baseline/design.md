@@ -7,7 +7,7 @@
   - owner 角色和库同名，默认没有 CREATEDB；
   - PgBouncer 的 transaction 池在 6432，session 池在 7432；
   - 只监听服务器回环地址，本机经 SSH 隧道在 `127.0.0.1` 访问。
-- 仓库托管在 GitHub `laodao-ai/temp-monitor`（private），以后公开。
+- 仓库托管在 GitHub `laodao-ai/demo-temp-monitor`（private），以后公开。
 
 ## Goals / Non-Goals
 

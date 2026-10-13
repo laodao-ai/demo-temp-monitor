@@ -36,7 +36,7 @@ temp-monitor 是一个温度监控教学示例，仓里目前只有 openspec 工
 - 技术栈命中 **TG-01（后端服务变更）**，下游选用领域清单 `backend` + `backend-go`。
 - 新增依赖：`github.com/jackc/pgx/v5`（Go module 依赖）；运行与测试需要 Go 1.27、psql、jq、curl、bash、C 编译器（`-race` 需要）。[spec-review-amendment]
 - 外部系统：远端开发库（PostgreSQL 18，经 PgBouncer session 池 + SSH 隧道访问），本 change 不配置它，只消费它。
-- Go module 名：`github.com/laodao-ai/temp-monitor`。
+- Go module 名：`github.com/laodao-ai/demo-temp-monitor`。
 
 ## Success Metrics
 
@@ -79,7 +79,7 @@ temp-monitor 是一个温度监控教学示例，仓里目前只有 openspec 工
 |---|---|---|---|
 | 仓库维护者（人） | 拍板全部范围与公开时机 | 知晓 | 决策 |
 | 远端开发库 | 上游依赖；连真库层和 tag 依赖它 | 需人用 `/pg-dev-init` 以 `DB_NAME=temp_monitor_demo` 配置 | 否决（不就绪即无法打 tag） |
-| GitHub `laodao-ai/temp-monitor` | 代码托管，当前 private | 已建 | 知情 |
+| GitHub `laodao-ai/demo-temp-monitor` | 代码托管，当前 private | 已建 | 知情 |
 
 ## Open Questions
 

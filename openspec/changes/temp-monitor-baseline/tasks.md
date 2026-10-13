@@ -1,6 +1,6 @@
 ## 1. 仓库骨架与配置
 
-- [ ] 1.1 建 `go.mod`（module `github.com/laodao-ai/temp-monitor`，`go 1.27`），引入 `github.com/jackc/pgx/v5`；`go build ./...` 通过 〔RUN-01〕
+- [ ] 1.1 建 `go.mod`（module `github.com/laodao-ai/demo-temp-monitor`，`go 1.27`），引入 `github.com/jackc/pgx/v5`；`go build ./...` 通过 〔RUN-01〕
 - [ ] 1.2 `.gitignore` 追加 `config/local.env` 与 `.pg-ops/`（`/.idea/` 已有）；验证：建一个 `config/local.env` 后 `git status --porcelain` 不显示它 〔RUN-05〕
 - [ ] 1.3 写 `config/example.env`：三个键的占位值（主机 `127.0.0.1`、端口 7432、口令 `CHANGE_ME`、库名与用户名 `temp_monitor_demo`），注释写明连 session 池端口、口令做 URL 编码 〔RUN-05〕
 - [ ] 1.4 实现 `internal/config`：环境变量 > `config/local.env` > 缺省；文件按 design「Configuration Surface」的文法解析；缺 `TM_DATABASE_URL`、阈值不是有限数时返回指明键名的错误 [spec-review-amendment]。单元测试覆盖三种优先级、文件不存在、注释与空行、两种错误，以及：值含 `=` 与 `&`、空值、带引号、无 `=` 的行、未知键、CRLF 行尾、阈值为 `NaN` / `Inf` / `-Inf` [spec-review-amendment] 〔RUN-01, RUN-02, RUN-03〕
