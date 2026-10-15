@@ -28,7 +28,7 @@
 - bash
 - C 编译器（`go test -race` 需要）
 
-测过的版本：Go 1.27；PostgreSQL 18 待确认。
+测过的版本：Go 1.27；PostgreSQL 18（实测 18.6）。
 
 ## 配置
 
