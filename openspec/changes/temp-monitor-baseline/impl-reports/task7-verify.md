@@ -22,7 +22,7 @@
 ---|---|---|---
 unit | `SDFLOW_DIFF_BASE=f08aeab074c6d98c6301dad6789d38a6caa9a332 scripts/test.sh unit` | 0 | 181b2d94b83f54a871898b7ba830eed5c17ec935
 integration | `SDFLOW_DIFF_BASE=f08aeab074c6d98c6301dad6789d38a6caa9a332 scripts/test.sh integration` | 0 | 181b2d94b83f54a871898b7ba830eed5c17ec935
-e2e | — | 未覆盖 | 仓内无独立 e2e 层；端到端 HTTP 测试已在 integration 层（internal/httpapi/e2e_integration_test.go）
+e2e | — | 未覆盖 | 仓内无独立 e2e 层：design.md:250-253「Test Runner」只定义 unit 与 integration 两层，specs/test-runner/spec.md:17-19 规定 `e2e` 为非法参数；端到端 HTTP 测试带 integration tag，在 integration 层内（internal/httpapi/e2e_integration_test.go:1）
 
 ## 输出汇总行
 
