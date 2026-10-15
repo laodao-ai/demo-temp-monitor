@@ -6,3 +6,7 @@
 
 # outside-voice 的 context 与输出只留本机，不进仓
 **/.outside-voice/
+.pg-ops/
+
+# 本机配置含数据库口令，不进仓
+config/local.env
