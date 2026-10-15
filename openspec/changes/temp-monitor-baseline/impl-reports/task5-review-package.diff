@@ -1,0 +1,529 @@
+# Review package: b4593fd..af4a382 (Task 5 worktree merge)
+
+## Commits
+af4a382 merge: Task 5 重建脚本、模拟脚本、README（worktree 合并）
+f289067 feat(scripts): 演示库重建脚本、模拟上报脚本与 README
+
+## Files changed
+ README.md                                          |  73 +++++++++
+ .../impl-reports/task5-scripts-readme.md           | 166 +++++++++++++++++++++
+ scripts/db-reset.sh                                |  84 +++++++++++
+ scripts/lib/local_env.sh                           |  58 +++++++
+ scripts/simulate.sh                                | 103 +++++++++++++
+ 5 files changed, 484 insertions(+)
+
+## Diff
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..c711dbe
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,73 @@
++# demo-temp-monitor
++
++一个演示项目：用 Go 写的设备温度监控服务。它接收设备上报的温度，存进 PostgreSQL，温度超过阈值时写一条告警日志。
++
++仓库地址：`github.com/laodao-ai/demo-temp-monitor`。
++
++## 范围
++
++项目只做四块：
++
++1. 设备注册与注销（`POST /devices`、`DELETE /devices/{id}`）。
++2. 温度上报（`POST /devices/{id}/readings`）。
++3. 超温告警：读数严格大于阈值时，服务写一条 WARN 日志 `over-temperature alarm`。
++4. 配置与运行：三个配置项、`127.0.0.1` 默认监听、启动前置检查、优雅退出。
++
++不做鉴权、限流、查询接口、指标和健康检查。
++
++## 无鉴权，只应监听 127.0.0.1
++
++服务没有任何鉴权。默认监听 `127.0.0.1:8080`，只应保持在回环地址。把 `TM_LISTEN_ADDR` 改成其它地址，风险由使用者自己承担。
++
++## 前置工具
++
++- Go 1.27
++- psql（PostgreSQL 客户端）
++- jq
++- curl
++- bash
++- C 编译器（`go test -race` 需要）
++
++测过的版本：Go 1.27；PostgreSQL 18 待确认。
++
++## 配置
++
++三个配置项，取值来源的优先级是：环境变量，其次 `config/local.env`，最后缺省值。
++
++| 键 | 缺省 | 说明 |
++|---|---|---|
++| `TM_DATABASE_URL` | 无，必填 | pgx 连接串 |
++| `TM_LISTEN_ADDR` | `127.0.0.1:8080` | 服务监听地址 |
++| `TM_ALARM_THRESHOLD_C` | `50.0` | 告警阈值（°C），读数严格大于它才告警 |
++
++配置方法：
++
++1. 复制 `config/example.env` 为 `config/local.env`。
++2. 填入连接串。`config/local.env` 已被 `.gitignore` 忽略，不会被提交。
++3. 连接串里的口令含特殊字符时，做 URL 编码（例如 `@` 写成 `%40`，`#` 写成 `%23`）。
++4. 连数据库连接池的 session 池端口，不要连 transaction 池端口。服务使用预处理语句，transaction 池不支持。
++
++`config/local.env` 每行一个 `KEY=VALUE`，值不加引号，不做变量展开，不支持行内注释。服务和 `scripts/` 下的脚本逐行按字面读取它，不执行文件内容。
++
++## 启动顺序
++
++1. 建库：在 PostgreSQL 里建好库 `temp_monitor_demo` 和对应的用户。
++2. 隧道：数据库在远端时，先起 SSH 隧道，把本机端口转到数据库的 session 池端口。
++3. 配置：按上一节写好 `config/local.env`。
++4. 重建表和种子数据：`scripts/db-reset.sh`。
++5. 启动服务：在仓根执行 `go run ./cmd/temp-monitor`。服务按当前目录找 `config/local.env`，所以要从仓根启动。
++6. 模拟设备上报：`scripts/simulate.sh [rounds]`。`rounds` 缺省为 10。
++
++`scripts/db-reset.sh` 只对库 `temp_monitor_demo` 生效，其它库名一律拒绝。它在一个事务里删表、建表、写种子数据，失败时整体回滚。
++
++退出码：0 成功；1 缺 `TM_DATABASE_URL` 或 `config/local.env` 有语法错误；2 用法错误；3 库名不符；4 psql 失败。
++
++## 测试
++
++统一入口是 `scripts/test.sh [unit|integration|all]`，缺省为 `all`。
++
++- 第一个要跑的命令是 `scripts/test.sh unit`。它只跑单元层，用内存存储，不需要数据库。
++- `scripts/test.sh integration` 跑连真库层，需要先配好 `config/local.env` 并执行过 `scripts/db-reset.sh`。
++- 没配数据库时直接跑 `scripts/test.sh`（即 `all`）会失败：连真库层连不上库时失败，不会跳过。
++- 汇总行是 stdout 的最后一行：`N passed, M failed, K skipped (T total)`。
++- 用法错误（参数不是 `unit` / `integration` / `all`）和缺工具（`go`、`jq`）时没有汇总行。
+diff --git a/openspec/changes/temp-monitor-baseline/impl-reports/task5-scripts-readme.md b/openspec/changes/temp-monitor-baseline/impl-reports/task5-scripts-readme.md
+new file mode 100644
+index 0000000..c3a018c
+--- /dev/null
++++ b/openspec/changes/temp-monitor-baseline/impl-reports/task5-scripts-readme.md
+@@ -0,0 +1,166 @@
++# Task 5 实现记录：重建脚本、模拟脚本、README
++
++## 产物
++
++- `scripts/db-reset.sh`（tasks 4.1）
++- `scripts/simulate.sh`（tasks 4.4）
++- `scripts/lib/local_env.sh`：两个脚本共用的 `config/local.env` 逐行解析函数，只被 `source` 的是脚本自己的 lib，不是配置文件。bash 3.2 兼容（macOS 默认 bash）。
++- `README.md`（tasks 5.1）
++
++`shellcheck -x -P .` 对三个 shell 文件无告警。
++
++## 前置问题
++
++派发时 worktree 的起点是 `f08aeab`，不是票里写的 `38bdde5`，里面没有 Go 代码、`db/`、`config/` 和 change 目录。已在自己的分支上 `git reset --hard 38bdde5`（该分支此前没有任何自己的提交），之后的工作都基于 `38bdde5`。
++
++## 4.1 `db-reset.sh` 逐项对照
++
++| 要求 | 实现位置 / 证据 |
++|---|---|
++| 开头切到仓根 | `cd "$(... dirname BASH_SOURCE)/.."`；下面从 `/tmp` 调用的场景证明 |
++| 带参数退出 2 | 场景 usage |
++| 环境变量非空直接用；否则读文件一个键，不 `source`；都没有退出 1 | `local_env_get`（逐行 `read`，不执行内容）；场景 no config |
++| 文件文法错误退出 1，只给行号不回显内容 | 场景 bad line（3 种） |
++| `current_database()` 不符退出 3，打印实际库名 | 桩 psql 场景 mismatch |
++| 重建带同一连接串，`SET lock_timeout = '5s'`，单事务 drop → migrations（字典序）→ seed | 脚本第 75 行；桩 psql 记录的实参见下 |
++| `PGCONNECT_TIMEOUT=5` | `export PGCONNECT_TIMEOUT=5` |
++| psql 失败捕获并映射为 4，stderr 先捕获脱敏后输出 | 桩 psql 场景 rebuild fails |
++| 守卫阶段只输出固定文案 | 场景 unreachable port |
++| 口令提取不出时重建失败也只输出固定文案 | 代码分支（未单独实测，见 Concerns） |
++
++### 实测：不连库四项
++
++命令均在 worktree 根执行，驱动脚本在 `/tmp`（不入仓）。
++
++```
++--- usage (arg): scripts/db-reset.sh temp_monitor_demo
++exit=2
++usage: scripts/db-reset.sh (takes no arguments)
++--- no config
++exit=1
++TM_DATABASE_URL is not set; copy config/example.env to config/local.env and fill it in
++```
++
++1. 不可达端口（`postgres://u:s3cret-xyz@127.0.0.1:1/temp_monitor_demo?sslmode=disable&connect_timeout=5`）：
++
++```
++exit=4
++cannot connect to database; check the SSH tunnel and that the URL uses the session pool port 7432
++```
++
++2. 两条 psql 都带同一连接串（`grep -n '"$TM_DATABASE_URL"' scripts/db-reset.sh`）：
++
++```
++58:if ! actual_db=$(psql "$TM_DATABASE_URL" -XAtqc 'select current_database()' 2>/dev/null); then
++75:if ! err=$(psql "$TM_DATABASE_URL" -Xq -v ON_ERROR_STOP=1 --single-transaction \
++```
++
++桩 psql 记录的两次调用（连接串相同）：
++
++```
++postgres://u:p@ss#w@127.0.0.1:7432/other_db -XAtqc select current_database()
++postgres://u:p@ss#w@127.0.0.1:7432/other_db -Xq -v ON_ERROR_STOP=1 --single-transaction -c SET lock_timeout = '5s' -f db/drop.sql -f db/migrations/0001_init.sql -f db/seed.sql
++```
++
++3. 四个口令（均不做 URL 编码，指向不可达端口），stdout+stderr 均不含口令及片段 `ss;w`、`ss#w`、`%zz`：
++
++```
++--- pw=p(ss;w   exit=4 leak=no output: cannot connect to database; check the SSH tunnel and that the URL uses the session pool port 7432
++--- pw=p&ss     exit=4 leak=no output: (同上)
++--- pw=p%zz     exit=4 leak=no output: (同上)
++--- pw=p@ss#w   exit=4 leak=no output: (同上)
++```
++
++4. `config/local.env` 含 `TM_DATABASE_URL=$(touch marker)`，从 `/tmp` 目录调用：
++
++```
++exit=4
++cannot connect to database; check the SSH tunnel and that the URL uses the session pool port 7432
++marker check: ls: /tmp/marker: No such file or directory
++marker check: ls: marker: No such file or directory
++```
++
++### 补充实测
++
++- 文法错误（文件第 3 行分别为 `oops s3cret-xyz` / `FOO=1` / `TM_DATABASE_URL="x"`），均退出 1：
++  - `config/local.env line 3: missing "="; use KEY=VALUE`
++  - `config/local.env line 3: unknown key; allowed keys: TM_DATABASE_URL, TM_LISTEN_ADDR, TM_ALARM_THRESHOLD_C`
++  - `config/local.env line 3: value must not be quoted; remove the quotes`
++  - 第一条的输出不含 `s3cret-xyz`。
++- 文件里的 URL 含 `=`、`&`，行尾 CRLF：脚本读到整串并走到连库（退出 4，固定文案），没有被截断成"缺 URL"。
++- 桩 psql（`/tmp/stub/psql`，不入仓）：
++  - 守卫返回 `other_db`：`exit=3`，`refusing to reset: only temp_monitor_demo is allowed, connected database is other_db; check TM_DATABASE_URL`
++  - 守卫返回 `temp_monitor_demo`，重建成功：`exit=0`，`rebuilt database temp_monitor_demo`
++  - 重建失败，桩把连接串和口令 `p@ss#w` 写进 stderr：`exit=4`，`psql failed: ERROR: boom for *** password ***; nothing was changed; check the SSH tunnel, then the SQL files under db/`
++
++没有连真库跑，所以 DB-02/DB-03 的真库场景（首次重建、连续两次、回滚）留给 6.3。
++
++## 4.4 `simulate.sh` 逐项对照
++
++| 要求 | 证据 |
++|---|---|
++| 开头切到仓根，`LC_ALL=C` | 脚本头部；从 `/tmp` 调用的场景 |
++| `TM_LISTEN_ADDR`：环境变量非空 > 文件 > 缺省，逐行解析不 `source` | 场景 env overrides file、file addr |
++| 以 `:` 开头时主机用 `127.0.0.1` | 文件写 `TM_LISTEN_ADDR=:18099`，请求到了 `127.0.0.1:18099`，退出 0 |
++| `rounds` 非正整数退出 2 并打印用法 | 下面 |
++| curl 带 `--max-time 5` | 脚本 `request` 函数 |
++| 注册 409 视为已注册并继续 | 场景 again |
++| sim-01/02 在 18.0–35.0，sim-03 在 50.5–60.0 | `tenths 180 350` / `tenths 505 600`；实测值 19.1–33.6、50.7–59.8 |
++| 请求失败打印请求与响应，退出 1 | 下面 |
++
++实测（本机 8080 无人监听，已用 `lsof` 确认 0 个监听者）：
++
++```
++--- service not running (scripts/simulate.sh)
++exit=1
++request failed: POST http://127.0.0.1:8080/devices -> curl error 7; start the service first, or check TM_LISTEN_ADDR
++request body: {"id":"sim-01"}
++--- rounds=0   exit=2  usage: scripts/simulate.sh [rounds]  (rounds: positive integer, default 10)
++--- rounds=abc exit=2  (同上)
++--- rounds=-1  exit=2  (同上)
++--- rounds=1.5 exit=2  (同上)
++--- two args (1 2) exit=2 (同上)
++--- file TM_DATABASE_URL=$(touch marker), cwd=/tmp, 服务未运行
++exit=1
++request failed: POST http://127.0.0.1:8080/devices -> curl error 7; ...
++marker check: ls: /tmp/marker: No such file or directory
++marker check: ls: marker: No such file or directory
++--- file line "junk"
++exit=1
++config/local.env line 1: missing "="; use KEY=VALUE
++```
++
++成功路径用一个本地假服务（`/tmp/fake_srv.py`，只回 201/409，不入仓）验证：
++
++- `rounds=2`，退出 0；服务端日志显示 3 次注册 201、6 条读数 201。
++- 再跑一次：3 次注册得 409，输出 `sim-0N already registered, continuing`，6 条读数后退出 0。
++- 环境变量 `TM_LISTEN_ADDR=127.0.0.1:18099` 覆盖文件里的 `127.0.0.1:1`，请求成功。
++
++## 5.1 README 对照
++
++| 要求 | README 位置 |
++|---|---|
++| 项目说明与四块范围 | 「范围」 |
++| 前置工具（Go 1.27、psql、jq、curl、bash、C 编译器，`-race` 需要） | 「前置工具」 |
++| 测过的版本：Go 1.27；PostgreSQL 18 | 「前置工具」末行：`Go 1.27；PostgreSQL 18 待确认`，待 Task 6（6.4 通过后）确认 |
++| 配置方法 | 「配置」（含优先级、复制 example.env、URL 编码、session 池端口、文法） |
++| 启动顺序：建库 → 隧道 → `config/local.env` → `db-reset.sh` → 启动服务 → `simulate.sh` | 「启动顺序」 |
++| 测试用法：第一个命令 `scripts/test.sh unit` 不需数据库；没配库时直接跑 `scripts/test.sh` 会失败；用法错误和缺工具时无汇总行 | 「测试」 |
++| 「无鉴权，只应监听 127.0.0.1」 | 独立小节 |
++
++README 没有真实主机、IP（只有 `127.0.0.1`）、口令、公司名、客户名；`laodao-ai` 只出现在仓库地址里；没有描述 `.pg-ops/`。
++
++## Concerns
++
++- `scripts/lib/local_env.sh` 是票外新增的共享文件（两个脚本共用一份解析器，避免文法在两处各写一遍而漂移）。如果编排层要求每个脚本自包含，把函数内联即可。
++- 口令提取失败时，重建失败分支只输出固定文案，这条分支没有单独实测。
++- 真库场景（DB-02 首次重建与连续两次、DB-03 回滚、DB-04 种子内容、"默认 psql 目标也可连"）没有执行，属 6.3。
++- `scripts/test.sh` 不在本票范围，没有碰。
++
++## 票外发现
++
++无。
++
++## 提交
++
++见返回值（报告随同一个提交，SHA 以返回值为准）。
+diff --git a/scripts/db-reset.sh b/scripts/db-reset.sh
+new file mode 100755
+index 0000000..d69abfd
+--- /dev/null
++++ b/scripts/db-reset.sh
+@@ -0,0 +1,84 @@
++#!/usr/bin/env bash
++# Rebuild the demo database from scratch in one transaction.
++# Exit codes: 0 ok; 1 missing TM_DATABASE_URL or bad config/local.env; 2 usage;
++# 3 database name mismatch; 4 psql failed.
++set -u
++
++# Run from the repo root so the result does not depend on the caller's directory.
++cd "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
++# shellcheck source=scripts/lib/local_env.sh
++source scripts/lib/local_env.sh
++
++readonly DEMO_DB="temp_monitor_demo"
++readonly TUNNEL_HINT="check the SSH tunnel and that the URL uses the session pool port 7432"
++
++if [[ $# -gt 0 ]]; then
++  echo "usage: scripts/db-reset.sh (takes no arguments)" >&2
++  exit 2
++fi
++
++# Environment variable (non-empty) wins; otherwise read the one key from the file.
++url=${TM_DATABASE_URL:-}
++if [[ -z $url ]]; then
++  if ! url=$(local_env_get TM_DATABASE_URL); then
++    exit 1
++  fi
++fi
++if [[ -z $url ]]; then
++  echo "TM_DATABASE_URL is not set; copy config/example.env to config/local.env and fill it in" >&2
++  exit 1
++fi
++TM_DATABASE_URL=$url
++export PGCONNECT_TIMEOUT=5
++
++# Password = text between the first ":" after the scheme and the last "@".
++# Empty when it cannot be extracted; then no psql error text is ever printed.
++password=""
++rest=${TM_DATABASE_URL#*://}
++if [[ $rest == *:* ]]; then
++  after_colon=${rest#*:}
++  if [[ $after_colon == *@* ]]; then
++    password=${after_colon%@*}
++  fi
++fi
++
++# Replace the whole URL and the password with *** (literal match, quoted patterns).
++redact() {
++  local s=$1
++  s=${s//"$TM_DATABASE_URL"/***}
++  if [[ -n $password ]]; then
++    s=${s//"$password"/***}
++  fi
++  printf '%s' "$s"
++}
++
++# Guard: look at the database actually connected to, not at the URL text.
++# Connection-phase errors are never printed: a malformed password can leak into
++# the host name the driver reports, which redaction cannot catch.
++if ! actual_db=$(psql "$TM_DATABASE_URL" -XAtqc 'select current_database()' 2>/dev/null); then
++  echo "cannot connect to database; $TUNNEL_HINT" >&2
++  exit 4
++fi
++if [[ $actual_db != "$DEMO_DB" ]]; then
++  echo "refusing to reset: only $DEMO_DB is allowed, connected database is $actual_db; check TM_DATABASE_URL" >&2
++  exit 3
++fi
++
++# Rebuild: drop -> migrations (lexicographic order, LC_ALL=C) -> seed, one transaction.
++export LC_ALL=C
++files=(-f db/drop.sql)
++for f in db/migrations/*.sql; do
++  files+=(-f "$f")
++done
++files+=(-f db/seed.sql)
++
++if ! err=$(psql "$TM_DATABASE_URL" -Xq -v ON_ERROR_STOP=1 --single-transaction \
++  -c "SET lock_timeout = '5s'" "${files[@]}" 2>&1 >/dev/null); then
++  if [[ -n $password ]]; then
++    echo "psql failed: $(redact "$err"); nothing was changed; check the SSH tunnel, then the SQL files under db/" >&2
++  else
++    echo "psql failed; nothing was changed; check the SSH tunnel, then the SQL files under db/" >&2
++  fi
++  exit 4
++fi
++echo "rebuilt database $DEMO_DB"
+diff --git a/scripts/lib/local_env.sh b/scripts/lib/local_env.sh
+new file mode 100644
+index 0000000..6e7433d
+--- /dev/null
++++ b/scripts/lib/local_env.sh
+@@ -0,0 +1,58 @@
++# shellcheck shell=bash
++# Sourced by scripts/db-reset.sh and scripts/simulate.sh. Not executable on its own.
++# Reads one key from config/local.env with the same line grammar as internal/config
++# (design "Configuration Surface"). The file is parsed line by line and never executed.
++# Compatible with bash 3.2 (macOS default): no associative arrays.
++
++LOCAL_ENV_FILE="config/local.env"
++
++# trim_ws VALUE -> sets TRIMMED to VALUE without leading/trailing whitespace.
++trim_ws() {
++  local s=$1
++  s=${s#"${s%%[![:space:]]*}"}
++  s=${s%"${s##*[![:space:]]}"}
++  TRIMMED=$s
++}
++
++# local_env_get KEY -> prints the value of KEY (last occurrence wins; empty if absent).
++# Validates every line, like the Go parser. On a grammar error it prints
++# "<file> line <n>: <message>; <hint>" to stderr (never the line content) and returns 1.
++# A missing file is not an error.
++local_env_get() {
++  local want=$1 line trimmed key val n=0 result=""
++  if [[ ! -f $LOCAL_ENV_FILE ]]; then
++    return 0
++  fi
++  while IFS= read -r line || [[ -n $line ]]; do
++    n=$((n + 1))
++    line=${line%$'\r'}
++    trim_ws "$line"
++    trimmed=$TRIMMED
++    if [[ -z $trimmed || $trimmed == \#* ]]; then
++      continue
++    fi
++    if [[ $line != *=* ]]; then
++      echo "$LOCAL_ENV_FILE line $n: missing \"=\"; use KEY=VALUE" >&2
++      return 1
++    fi
++    trim_ws "${line%%=*}"
++    key=$TRIMMED
++    trim_ws "${line#*=}"
++    val=$TRIMMED
++    case $key in
++      TM_DATABASE_URL | TM_LISTEN_ADDR | TM_ALARM_THRESHOLD_C) ;;
++      *)
++        echo "$LOCAL_ENV_FILE line $n: unknown key; allowed keys: TM_DATABASE_URL, TM_LISTEN_ADDR, TM_ALARM_THRESHOLD_C" >&2
++        return 1
++        ;;
++    esac
++    if [[ $val == \"* || $val == \'* ]]; then
++      echo "$LOCAL_ENV_FILE line $n: value must not be quoted; remove the quotes" >&2
++      return 1
++    fi
++    if [[ $key == "$want" ]]; then
++      result=$val
++    fi
++  done <"$LOCAL_ENV_FILE"
++  printf '%s' "$result"
++}
+diff --git a/scripts/simulate.sh b/scripts/simulate.sh
+new file mode 100755
+index 0000000..f91d494
+--- /dev/null
++++ b/scripts/simulate.sh
+@@ -0,0 +1,103 @@
++#!/usr/bin/env bash
++# Simulate three devices reporting temperatures over HTTP. sim-03 is over the
++# default 50.0 threshold every round.
++# Exit codes: 0 ok; 1 request failed or bad config/local.env; 2 usage.
++set -u
++export LC_ALL=C
++
++# Run from the repo root so the result does not depend on the caller's directory.
++cd "$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
++# shellcheck source=scripts/lib/local_env.sh
++source scripts/lib/local_env.sh
++
++usage() {
++  echo "usage: scripts/simulate.sh [rounds]  (rounds: positive integer, default 10)" >&2
++  exit 2
++}
++
++if [[ $# -gt 1 ]]; then
++  usage
++fi
++rounds=${1:-10}
++if [[ ! $rounds =~ ^[0-9]+$ ]] || ((10#$rounds < 1)); then
++  usage
++fi
++rounds=$((10#$rounds))
++
++# Same source order as the service: non-empty env var > config/local.env > default.
++addr=${TM_LISTEN_ADDR:-}
++if [[ -z $addr ]]; then
++  if ! addr=$(local_env_get TM_LISTEN_ADDR); then
++    exit 1
++  fi
++fi
++addr=${addr:-127.0.0.1:8080}
++if [[ $addr == :* ]]; then
++  addr="127.0.0.1$addr"
++fi
++base="http://$addr"
++
++body_file=$(mktemp) || exit 1
++trap 'rm -f "$body_file"' EXIT
++
++# request METHOD PATH JSON EXPECTED_CODES...
++# Prints the request and response and exits 1 when the status is not expected.
++# Sets STATUS to the HTTP status code.
++request() {
++  local method=$1 path=$2 data=$3 code rc ok=0 expected
++  shift 3
++  code=$(curl -sS --max-time 5 -o "$body_file" -w '%{http_code}' \
++    -X "$method" -H 'Content-Type: application/json' -d "$data" "$base$path" 2>/dev/null)
++  rc=$?
++  if [[ $rc -ne 0 ]]; then
++    echo "request failed: $method $base$path -> curl error $rc; start the service first, or check TM_LISTEN_ADDR" >&2
++    echo "request body: $data" >&2
++    exit 1
++  fi
++  for expected in "$@"; do
++    if [[ $code == "$expected" ]]; then
++      ok=1
++    fi
++  done
++  if [[ $ok -ne 1 ]]; then
++    echo "request failed: $method $base$path -> $code; start the service first, or check TM_LISTEN_ADDR" >&2
++    echo "request body: $data" >&2
++    echo "response body: $(cat "$body_file")" >&2
++    exit 1
++  fi
++  STATUS=$code
++}
++
++# tenths MIN MAX -> random value in [MIN/10, MAX/10] with one decimal place.
++tenths() {
++  local v=$(($1 + RANDOM % ($2 - $1 + 1)))
++  printf '%d.%d' $((v / 10)) $((v % 10))
++}
++
++devices=(sim-01 sim-02 sim-03)
++
++for d in "${devices[@]}"; do
++  request POST /devices "{\"id\":\"$d\"}" 201 409
++  if [[ $STATUS == 409 ]]; then
++    echo "$d already registered, continuing"
++  else
++    echo "registered $d"
++  fi
++done
++
++round=1
++while ((round <= rounds)); do
++  for d in "${devices[@]}"; do
++    if [[ $d == sim-03 ]]; then
++      t=$(tenths 505 600)
++    else
++      t=$(tenths 180 350)
++    fi
++    request POST "/devices/$d/readings" "{\"temperature_c\":$t}" 201
++    echo "round $round: $d $t"
++  done
++  if ((round < rounds)); then
++    sleep 0.2
++  fi
++  round=$((round + 1))
++done
