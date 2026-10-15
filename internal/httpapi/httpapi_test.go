@@ -44,10 +44,16 @@ func newEnv(t *testing.T, threshold float64) env {
 // newEnvWith serves st over HTTP; ms is kept for direct inspection.
 func newEnvWith(t *testing.T, threshold float64, st store.Store, ms *memstore.Store) env {
 	t.Helper()
+	return newEnvConn(t, threshold, st, ms, testConnURL)
+}
+
+// newEnvConn is newEnvWith with the connection string the redactor is told about.
+func newEnvConn(t *testing.T, threshold float64, st store.Store, ms *memstore.Store, connURL string) env {
+	t.Helper()
 	logs := &bytes.Buffer{}
 	// The same wrapper main installs in production (Task 3): httpapi relies
 	// on the injected logger to redact connection details.
-	logger := slog.New(redact.Handler(slog.NewJSONHandler(logs, nil), testConnURL))
+	logger := slog.New(redact.Handler(slog.NewJSONHandler(logs, nil), connURL))
 	svc := service.New(st, threshold, logger)
 	return env{h: httpapi.NewHandler(svc, logger), ms: ms, logs: logs}
 }
@@ -487,6 +493,31 @@ func TestStoreErrorsGive500WithFixedBodyAndErrorLog(t *testing.T) {
 				t.Errorf("alarms = %d, want 0", n)
 			}
 		})
+	}
+}
+
+// A connection string without an extractable password cannot be redacted
+// reliably, so the log must carry the fixed text instead of the raw error.
+func TestStoreErrorWithoutExtractablePasswordIsWithheldInLog(t *testing.T) {
+	const noPasswordURL = "postgres://user@h/db"
+	ms := memstore.New()
+	e := newEnvConn(t, 50, brokenStore{ms}, ms, noPasswordURL)
+	rec := e.do("POST", "/devices", `{"id":"sensor-01"}`)
+	errorBody(t, rec, 500, "internal error")
+	if strings.Contains(e.logs.String(), "boom") {
+		t.Errorf("log carries the raw error text: %s", e.logs)
+	}
+	var found map[string]any
+	for _, l := range logLines(t, e.logs) {
+		if l["level"] == "ERROR" {
+			found = l
+		}
+	}
+	if found == nil {
+		t.Fatalf("no ERROR log; logs: %s", e.logs)
+	}
+	if found["error"] != "error details withheld" {
+		t.Errorf("error attr = %v, want %q", found["error"], "error details withheld")
 	}
 }
 

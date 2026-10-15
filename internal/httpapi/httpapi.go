@@ -149,11 +149,12 @@ func (h *handler) writeServiceError(w http.ResponseWriter, r *http.Request, devi
 	default:
 		// The underlying error goes to the log only, never into the response.
 		// Redaction is the injected logger's job: main wraps its handler with
-		// internal/redact (Task 3), so the raw error text is passed on here.
+		// internal/redact (Task 3). Pass the error value, not err.Error():
+		// redact only withholds the text for error values, not for strings.
 		h.logger.Error("request failed",
 			"route", r.Pattern,
 			"device_id", deviceID,
-			"error", err.Error())
+			"error", err)
 		writeError(w, http.StatusInternalServerError, msgInternal)
 	}
 }

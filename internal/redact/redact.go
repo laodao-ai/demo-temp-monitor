@@ -87,6 +87,8 @@ func (h *handler) WithGroup(name string) slog.Handler {
 	return &handler{inner: h.inner.WithGroup(name), connURL: h.connURL, pwOK: h.pwOK}
 }
 
+// attr handles strings, groups and error values only; other KindAny values
+// pass through unchanged.
 func (h *handler) attr(a slog.Attr) slog.Attr {
 	v := a.Value.Resolve()
 	switch v.Kind() {
