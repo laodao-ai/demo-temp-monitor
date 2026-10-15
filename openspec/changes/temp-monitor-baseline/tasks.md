@@ -71,8 +71,10 @@
   - IPv4：`git log -p -m --all` 的输出用 `grep -oE` 抽出全部 IPv4 token，再排除 `127.0.0.1` 这个 token（不是整行排除）；[spec-review-amendment]
   - 连接串与口令：在同一输出里查 `postgres://` 后跟非 `CHANGE_ME` 口令的连接串，以及 `PGPASSWORD=`；[spec-review-amendment]
   - 邮箱与姓名：`git log --all --format='%ae %ce %an %cn'` 中非 noreply 的邮箱；其中的姓名由人逐个核对；[spec-review-amendment]
-  - 公司名和客户名：由人在执行时临时输入作为 grep 关键词，不写入任何文件。
+  - 公司名和客户名：由人在执行时临时输入作为 grep 关键词，不写入任何文件。`laodao-ai` 是 GitHub 组织名，不算公司名，不进关键词（设计门 Q2）。
   〔RUN-05〕
+
+> 6.3–6.6 留在本 change（设计门 Q1 选 A）。远端库或 `config/local.env` 未就绪时，实现做到 6.2 停下，报「等远端库」，6.3–6.6 不勾；人配好后继续，6.1–6.6 全勾后才执行 `/sdflow-done`。
 
 > 打 tag `baseline` 在 sdflow-done 把本分支合并到 main 之后进行，前提是 6.4、6.6 已通过。它写进 hand-off，不作为本清单的任务。合并到 main 后、打 tag 前，在 main 上把 6.6 的审计重跑一次，这一步也写进 hand-off。[spec-review-amendment]
 
