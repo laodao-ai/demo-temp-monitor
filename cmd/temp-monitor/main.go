@@ -121,6 +121,10 @@ func run(ctx context.Context, getenv func(string) string, envPath string, stderr
 		defer cancel()
 		if err := srv.Shutdown(shutCtx); err != nil {
 			logger.Warn("shutdown did not finish in time", "error", err)
+			// [impl-review-fix] Close cancels in-flight request contexts (and so
+			// their store calls); otherwise closeStore waits for borrowed
+			// connections and exit can pass the 5 s limit (RUN-06).
+			_ = srv.Close()
 		}
 	}()
 

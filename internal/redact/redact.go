@@ -5,6 +5,7 @@ package redact
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"strings"
 )
 
@@ -45,7 +46,13 @@ func Text(text, connURL string) (out string, ok bool) {
 	if !ok {
 		return out, false
 	}
-	return strings.ReplaceAll(out, pw, mask), true
+	out = strings.ReplaceAll(out, pw, mask)
+	// [impl-review-fix] The URL holds the URL-encoded password but a driver error
+	// may print the decoded one; mask the decoded form too.
+	if decoded, err := url.PathUnescape(pw); err == nil && decoded != "" && decoded != pw {
+		out = strings.ReplaceAll(out, decoded, mask)
+	}
+	return out, true
 }
 
 // Handler wraps inner so every record's message and string attributes

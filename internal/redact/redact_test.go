@@ -44,6 +44,21 @@ func TestTextRemovesPasswordAndFragments(t *testing.T) {
 	}
 }
 
+// [impl-review-fix] README tells users to URL-encode special characters, so
+// the URL holds "p%40ss%23w" while a driver error may print the decoded "p@ss#w".
+func TestTextRemovesDecodedFormOfEncodedPassword(t *testing.T) {
+	u := "postgres://user:p%40ss%23w@127.0.0.1:7432/db"
+	in := "auth failed for password p@ss#w and raw p%40ss%23w"
+	got, ok := redact.Text(in, u)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := "auth failed for password *** and raw ***"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestTextReportsUnextractablePassword(t *testing.T) {
 	for _, u := range []string{
 		"postgres://user@127.0.0.1/db",  // no colon before the @

@@ -17,11 +17,19 @@ trim_ws() {
 # local_env_get KEY -> prints the value of KEY (last occurrence wins; empty if absent).
 # Validates every line, like the Go parser. On a grammar error it prints
 # "<file> line <n>: <message>; <hint>" to stderr (never the line content) and returns 1.
-# A missing file is not an error.
+# A missing file is not an error; an unreadable one prints "<file>: cannot read file"
+# to stderr and returns 1.
 local_env_get() {
   local want=$1 line trimmed key val n=0 result=""
   if [[ ! -f $LOCAL_ENV_FILE ]]; then
     return 0
+  fi
+  # [impl-review-fix] An unreadable file made the redirect below fail while the
+  # function still printed an empty value and returned 0, hiding the real cause.
+  # Same text as the Go service (internal/config).
+  if [[ ! -r $LOCAL_ENV_FILE ]]; then
+    echo "$LOCAL_ENV_FILE: cannot read file" >&2
+    return 1
   fi
   while IFS= read -r line || [[ -n $line ]]; do
     n=$((n + 1))

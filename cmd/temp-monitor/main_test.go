@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -230,5 +231,87 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met within 5s")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// blockingStore blocks CreateDevice until its ctx ends and records why.
+type blockingStore struct {
+	store.Store
+	entered chan struct{}
+	ended   chan error
+}
+
+func (b *blockingStore) CreateDevice(ctx context.Context, _ string) (store.Device, error) {
+	close(b.entered)
+	<-ctx.Done()
+	b.ended <- ctx.Err()
+	return store.Device{}, ctx.Err()
+}
+
+// [impl-review-fix] The request body is still arriving when shutdown starts, so
+// the store call (with its own 5 s timeout) begins after the shutdown wait is
+// already running. Closing the server at the 5 s limit must cancel that call
+// (context.Canceled) instead of leaving it to its own later deadline (RUN-06).
+func TestShutdownTimeoutCancelsInFlightRequest(t *testing.T) {
+	bs := &blockingStore{Store: memstore.New(), entered: make(chan struct{}), ended: make(chan error, 1)}
+	open := func(context.Context, string) (store.Store, func(), error) { return bs, func() {}, nil }
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close() // free the port so run can bind it
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	stderr := &lockedBuffer{}
+	done := make(chan int, 1)
+	go func() {
+		done <- run(ctx, env(map[string]string{"TM_DATABASE_URL": "postgres://u:pw@h/d", "TM_LISTEN_ADDR": addr}),
+			noFile, stderr, open)
+	}()
+	waitFor(t, func() bool { return strings.Contains(stderr.String(), "msg=listening") })
+
+	// Send the headers and part of the body now, the rest after shutdown began.
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	body := `{"id":"d1"}`
+	head := "POST /devices HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: " +
+		strconv.Itoa(len(body)) + "\r\n\r\n"
+	if _, err := conn.Write([]byte(head + body[:5])); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond) // let the server start handling the request
+
+	start := time.Now()
+	cancel()
+	time.Sleep(2 * time.Second)
+	if _, err := conn.Write([]byte(body[5:])); err != nil {
+		t.Fatal(err)
+	}
+	<-bs.entered // store timeout (5 s) now runs until about start+7s
+
+	select {
+	case err := <-bs.ended:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("store ctx ended with %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("in-flight store call was not canceled at the shutdown limit")
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit code = %d, want 0\n%s", code, stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run did not return after the server was closed")
+	}
+	if elapsed := time.Since(start); elapsed > 6500*time.Millisecond {
+		t.Fatalf("shutdown took %v, want about 5s", elapsed)
 	}
 }

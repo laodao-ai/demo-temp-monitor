@@ -42,6 +42,17 @@ if [[ $rest == *:* ]]; then
   fi
 fi
 
+# [impl-review-fix] README tells users to URL-encode special characters, so the
+# URL holds "p%40ss" while psql may print "p@ss". Also mask the decoded form.
+# Skipped when the password has a backslash: %b would misread it as an escape.
+password_decoded=""
+if [[ -n $password && $password == *%* && $password != *\\* ]]; then
+  printf -v password_decoded '%b' "${password//%/\\x}"
+  if [[ $password_decoded == "$password" ]]; then
+    password_decoded=""
+  fi
+fi
+
 # Replace the whole URL and the password with *** (literal match, quoted patterns).
 redact() {
   local s=$1
@@ -49,8 +60,18 @@ redact() {
   if [[ -n $password ]]; then
     s=${s//"$password"/***}
   fi
+  if [[ -n $password_decoded ]]; then
+    s=${s//"$password_decoded"/***}
+  fi
   printf '%s' "$s"
 }
+
+# [impl-review-fix] Without psql the guard query below would fail silently and
+# the "check the SSH tunnel" hint would send the user the wrong way.
+if ! command -v psql >/dev/null 2>&1; then
+  echo "required tool not found: psql; install it and make sure it is on PATH" >&2
+  exit 4
+fi
 
 # Guard: look at the database actually connected to, not at the URL text.
 # Connection-phase errors are never printed: a malformed password can leak into
