@@ -29,7 +29,10 @@ const (
 	envFile = "config/local.env"
 
 	readHeaderTimeout = 5 * time.Second
-	shutdownTimeout   = 5 * time.Second
+	// The body limit is 1 MiB, so 15 s is ample for a client to send a request.
+	readTimeout     = 15 * time.Second
+	idleTimeout     = 60 * time.Second
+	shutdownTimeout = 5 * time.Second
 
 	hintNoURL     = "copy config/example.env to config/local.env, fill it in, and start from the repo root"
 	hintThreshold = "must be a finite number, such as 50.0"
@@ -80,6 +83,11 @@ func run(ctx context.Context, getenv func(string) string, envPath string, stderr
 	st, closeStore, err := open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		switch {
+		case ctx.Err() != nil:
+			// A signal during startup cancels the connect and surfaces as
+			// ErrConnect; the tunnel hint would mislead. Only a graceful
+			// shutdown returns 0, so this is 1.
+			fail(stderr, "interrupted before the service started", "")
 		case errors.Is(err, pgstore.ErrConnect):
 			// Fixed text only: the driver can echo part of a malformed password.
 			fail(stderr, err.Error(), hintConnect)
@@ -107,6 +115,10 @@ func run(ctx context.Context, getenv func(string) string, envPath string, stderr
 	srv := &http.Server{
 		Handler:           httpapi.NewHandler(svc, logger),
 		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		IdleTimeout:       idleTimeout,
+		// No WriteTimeout: writing the response happens after the store call,
+		// which httpapi already bounds with storeTimeout.
 	}
 
 	// This goroutine is the signal wait: it turns ctx cancellation into Shutdown.

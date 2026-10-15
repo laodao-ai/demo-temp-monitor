@@ -18,7 +18,8 @@ usage() {
 if [[ $# -gt 1 ]]; then
   usage
 fi
-rounds=${1:-10}
+# ${1-10}: default only when no argument is given; an empty string is a usage error.
+rounds=${1-10}
 if [[ ! $rounds =~ ^[0-9]+$ ]] || ((10#$rounds < 1)); then
   usage
 fi
@@ -46,7 +47,9 @@ trap 'rm -f "$body_file"' EXIT
 request() {
   local method=$1 path=$2 data=$3 code rc ok=0 expected
   shift 3
-  code=$(curl -sS --max-time 5 -o "$body_file" -w '%{http_code}' \
+  # --noproxy: the service runs on this machine only; an http_proxy in the
+  # environment must not route these requests away from it.
+  code=$(curl -sS --noproxy '*' --max-time 5 -o "$body_file" -w '%{http_code}' \
     -X "$method" -H 'Content-Type: application/json' -d "$data" "$base$path" 2>/dev/null)
   rc=$?
   if [[ $rc -ne 0 ]]; then

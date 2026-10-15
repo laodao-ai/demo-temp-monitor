@@ -32,16 +32,25 @@ func New(s store.Store, thresholdC float64, logger *slog.Logger) *Service {
 	return &Service{store: s, thresholdC: thresholdC, logger: logger}
 }
 
-func (s *Service) Register(ctx context.Context, id string) (store.Device, error) {
+// ValidateID returns ErrInvalidID when id does not match IDPattern. httpapi
+// calls it before reading a request body.
+func ValidateID(id string) error {
 	if !idRegexp.MatchString(id) {
-		return store.Device{}, ErrInvalidID
+		return ErrInvalidID
+	}
+	return nil
+}
+
+func (s *Service) Register(ctx context.Context, id string) (store.Device, error) {
+	if err := ValidateID(id); err != nil {
+		return store.Device{}, err
 	}
 	return s.store.CreateDevice(ctx, id)
 }
 
 func (s *Service) Deregister(ctx context.Context, id string) error {
-	if !idRegexp.MatchString(id) {
-		return ErrInvalidID
+	if err := ValidateID(id); err != nil {
+		return err
 	}
 	return s.store.DeleteDevice(ctx, id)
 }
@@ -49,8 +58,8 @@ func (s *Service) Deregister(ctx context.Context, id string) error {
 // Report stores a reading. The alarm is written only after the store call
 // succeeded, and only when the temperature is strictly above the threshold.
 func (s *Service) Report(ctx context.Context, id string, tempC float64) (store.Reading, error) {
-	if !idRegexp.MatchString(id) {
-		return store.Reading{}, ErrInvalidID
+	if err := ValidateID(id); err != nil {
+		return store.Reading{}, err
 	}
 	r, err := s.store.AddReading(ctx, id, tempC)
 	if err != nil {

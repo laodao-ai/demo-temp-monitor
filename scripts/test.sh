@@ -11,7 +11,8 @@ case "$script_path" in
 esac
 cd -- "$script_dir/.." || exit 1
 
-mode="${1:-all}"
+# ${1-all}: default only when no argument is given; an empty string is invalid.
+mode="${1-all}"
 if [ "$#" -gt 1 ]; then
   mode="__invalid__"
 fi

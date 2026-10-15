@@ -47,7 +47,8 @@ fi
 # Skipped when the password has a backslash: %b would misread it as an escape.
 password_decoded=""
 if [[ -n $password && $password == *%* && $password != *\\* ]]; then
-  printf -v password_decoded '%b' "${password//%/\\x}"
+  # 2>/dev/null: an invalid escape such as %zz makes bash print a warning.
+  printf -v password_decoded '%b' "${password//%/\\x}" 2>/dev/null
   if [[ $password_decoded == "$password" ]]; then
     password_decoded=""
   fi
@@ -76,7 +77,7 @@ fi
 # Guard: look at the database actually connected to, not at the URL text.
 # Connection-phase errors are never printed: a malformed password can leak into
 # the host name the driver reports, which redaction cannot catch.
-if ! actual_db=$(psql "$TM_DATABASE_URL" -XAtqc 'select current_database()' 2>/dev/null); then
+if ! actual_db=$(psql -w "$TM_DATABASE_URL" -XAtqc 'select current_database()' 2>/dev/null); then
   echo "cannot connect to database; $TUNNEL_HINT" >&2
   exit 4
 fi
@@ -93,7 +94,7 @@ for f in db/migrations/*.sql; do
 done
 files+=(-f db/seed.sql)
 
-if ! err=$(psql "$TM_DATABASE_URL" -Xq -v ON_ERROR_STOP=1 --single-transaction \
+if ! err=$(psql -w "$TM_DATABASE_URL" -Xq -v ON_ERROR_STOP=1 --single-transaction \
   -c "SET lock_timeout = '5s'" "${files[@]}" 2>&1 >/dev/null); then
   if [[ -n $password ]]; then
     echo "psql failed: $(redact "$err"); nothing was changed; check the SSH tunnel, then the SQL files under db/" >&2

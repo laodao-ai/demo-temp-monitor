@@ -87,6 +87,11 @@ func (h *handler) deregister(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) report(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	// Validate the path ID before reading the body: a bad ID needs no body.
+	if err := service.ValidateID(id); err != nil {
+		h.writeServiceError(w, r, id, err)
+		return
+	}
 	// A pointer tells a missing temperature_c apart from 0.
 	var req struct {
 		TemperatureC *float64 `json:"temperature_c"`

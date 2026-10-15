@@ -1,7 +1,8 @@
 {
   "permissions": {
     "deny": [
-      "Read(./.pg-ops/**)"
+      "Read(./.pg-ops/**)",
+      "Read(./config/local.env)"
     ]
   }
 }

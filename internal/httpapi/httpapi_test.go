@@ -386,6 +386,15 @@ func TestReportInvalidPathID(t *testing.T) {
 	errorBody(t, e.do("POST", "/devices/BAD_ID/readings", `{"temperature_c": 20}`), 400, invalidIDMsg)
 }
 
+// The path ID is checked before the body is read: a bad ID with a broken or
+// oversized body gets the invalid-ID error, not a body error.
+func TestReportInvalidPathIDWinsOverBadBody(t *testing.T) {
+	e := newEnv(t, 50)
+	errorBody(t, e.do("POST", "/devices/BAD_ID/readings", `not json`), 400, invalidIDMsg)
+	big := `{"temperature_c": 20, "pad": "` + strings.Repeat("x", 1<<20) + `"}`
+	errorBody(t, e.do("POST", "/devices/BAD_ID/readings", big), 400, invalidIDMsg)
+}
+
 func TestReportBodyTooLargeSingleValue(t *testing.T) {
 	e := newEnv(t, 50)
 	e.register(t, "sensor-01")

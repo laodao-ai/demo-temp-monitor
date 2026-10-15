@@ -76,17 +76,20 @@ func TestTextReportsUnextractablePassword(t *testing.T) {
 	}
 }
 
+// Per the Handler rule: message and string attributes lose the whole
+// connection string, error values (also inside With and groups) lose the
+// password and its fragments too.
 func TestHandlerRedactsMessageAttrsErrorsAndGroups(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			u := connURL(c.pw)
 			var buf bytes.Buffer
 			log := slog.New(redact.Handler(slog.NewTextHandler(&buf, nil), u)).
-				With("preset", "x "+c.pw)
+				With("preset", "x "+u, "preset_err", errors.New("x "+c.pw))
 			log.Error("msg "+u,
 				"error", errors.New("dial "+u+" bad "+c.pw),
-				"plain", c.pw,
-				slog.Group("g", "inner", "has "+c.pw))
+				"plain", u,
+				slog.Group("g", "inner", "has "+u, "inner_err", errors.New("has "+c.pw)))
 			out := buf.String()
 			for _, bad := range []string{c.pw, c.fragment, u} {
 				if strings.Contains(out, bad) {
@@ -110,5 +113,43 @@ func TestHandlerWithholdsErrorTextWhenPasswordUnextractable(t *testing.T) {
 	}
 	if !strings.Contains(out, "error details withheld") {
 		t.Errorf("fixed text missing: %s", out)
+	}
+}
+
+// A short or common password must not rewrite constant text: only error
+// values get password replacement.
+func TestHandlerKeepsMessageAndStringAttrsWhenPasswordIsCommonWord(t *testing.T) {
+	u := connURL("temp")
+	var buf bytes.Buffer
+	log := slog.New(redact.Handler(slog.NewTextHandler(&buf, nil), u))
+	log.Warn("over-temperature alarm",
+		"device_id", "temp-01",
+		slog.Group("g", "inner", "temp-02"),
+		"error", errors.New("auth failed for password temp"))
+	out := buf.String()
+	for _, want := range []string{"over-temperature alarm", "device_id=temp-01", "g.inner=temp-02"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lost %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "password temp") {
+		t.Errorf("password survived in error value: %s", out)
+	}
+	if !strings.Contains(out, "auth failed for password ***") {
+		t.Errorf("error value not masked: %s", out)
+	}
+}
+
+func TestHandlerReplacesWholeConnStringInMessageAndStringAttrs(t *testing.T) {
+	u := connURL("temp")
+	var buf bytes.Buffer
+	log := slog.New(redact.Handler(slog.NewTextHandler(&buf, nil), u))
+	log.Error("dial "+u, "detail", "see "+u, slog.Group("g", "inner", u))
+	out := buf.String()
+	if strings.Contains(out, u) {
+		t.Errorf("connection string survived: %s", out)
+	}
+	if strings.Count(out, "***") != 3 {
+		t.Errorf("want 3 masks: %s", out)
 	}
 }

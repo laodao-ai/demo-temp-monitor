@@ -137,6 +137,24 @@ func TestOpenFailureMessages(t *testing.T) {
 	}
 }
 
+// A signal during startup cancels the connect, which the driver reports as
+// ErrConnect; the tunnel hint would be wrong, so the fixed text is printed.
+func TestInterruptedDuringStartupExitsOne(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	open := func(context.Context, string) (store.Store, func(), error) {
+		cancel()
+		return nil, nil, pgstore.ErrConnect
+	}
+	var stderr bytes.Buffer
+	code := run(ctx, env(map[string]string{"TM_DATABASE_URL": "postgres://u:pw@h/d"}), noFile, &stderr, open)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if want := "interrupted before the service started\n"; stderr.String() != want {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), want)
+	}
+}
+
 func TestOtherDriverErrorWithoutExtractablePasswordIsWithheld(t *testing.T) {
 	const url = "postgres://127.0.0.1:7432/d" // no password in the URL
 	open := func(context.Context, string) (store.Store, func(), error) {

@@ -55,8 +55,14 @@ func Text(text, connURL string) (out string, ok bool) {
 	return out, true
 }
 
-// Handler wraps inner so every record's message and string attributes
-// (including error values and group members) pass through Text.
+// Handler wraps inner to keep secrets out of log records.
+//
+// The password can only come from a driver error, so password replacement
+// applies to error values only. Messages and string attributes are constant
+// text or caller data (device IDs, "over-temperature alarm"): replacing a
+// short or common password in them would rewrite harmless text (password
+// "temp" turns "over-temperature" into "over-***erature"). They get only the
+// whole connection string replaced. Group members follow the same rules.
 func Handler(inner slog.Handler, connURL string) slog.Handler {
 	_, ok := password(connURL)
 	return &handler{inner: inner, connURL: connURL, pwOK: ok}
@@ -73,7 +79,7 @@ func (h *handler) Enabled(ctx context.Context, l slog.Level) bool {
 }
 
 func (h *handler) Handle(ctx context.Context, r slog.Record) error {
-	msg, _ := Text(r.Message, h.connURL)
+	msg := h.connString(r.Message)
 	nr := slog.NewRecord(r.Time, r.Level, msg, r.PC)
 	r.Attrs(func(a slog.Attr) bool {
 		nr.AddAttrs(h.attr(a))
@@ -94,14 +100,22 @@ func (h *handler) WithGroup(name string) slog.Handler {
 	return &handler{inner: h.inner.WithGroup(name), connURL: h.connURL, pwOK: h.pwOK}
 }
 
+// connString replaces only the whole connection string; see Handler.
+func (h *handler) connString(s string) string {
+	if h.connURL == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, h.connURL, mask)
+}
+
 // attr handles strings, groups and error values only; other KindAny values
-// pass through unchanged.
+// pass through unchanged. Strings get the connection string replaced; only
+// error values get password replacement (see Handler).
 func (h *handler) attr(a slog.Attr) slog.Attr {
 	v := a.Value.Resolve()
 	switch v.Kind() {
 	case slog.KindString:
-		s, _ := Text(v.String(), h.connURL)
-		return slog.String(a.Key, s)
+		return slog.String(a.Key, h.connString(v.String()))
 	case slog.KindGroup:
 		members := v.Group()
 		cleaned := make([]any, len(members))
