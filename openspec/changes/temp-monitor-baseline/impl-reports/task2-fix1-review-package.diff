@@ -1,0 +1,429 @@
+# Review package: 85d79e9..08b8e33 (Task 2 fix round 1)
+
+## Commits
+08b8e33 fix(httpapi,redact): 5xx ERROR 日志脱敏连接串与口令
+
+## Files changed
+ internal/httpapi/httpapi.go                        |   3 +-
+ internal/httpapi/httpapi_test.go                   |  24 +++--
+ internal/redact/redact.go                          | 113 +++++++++++++++++++++
+ internal/redact/redact_test.go                     |  99 ++++++++++++++++++
+ .../impl-reports/task2-service-http-fix1.md        |  27 +++++
+ 5 files changed, 258 insertions(+), 8 deletions(-)
+
+## Diff
+diff --git a/internal/httpapi/httpapi.go b/internal/httpapi/httpapi.go
+index c42b62e..cdc9f69 100644
+--- a/internal/httpapi/httpapi.go
++++ b/internal/httpapi/httpapi.go
+@@ -141,21 +141,22 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any, typeField, typeMs
+ func (h *handler) writeServiceError(w http.ResponseWriter, r *http.Request, deviceID string, err error) {
+ 	switch {
+ 	case errors.Is(err, service.ErrInvalidID):
+ 		writeError(w, http.StatusBadRequest, msgInvalidID)
+ 	case errors.Is(err, store.ErrNotFound):
+ 		writeError(w, http.StatusNotFound, msgNotFound)
+ 	case errors.Is(err, store.ErrAlreadyExists):
+ 		writeError(w, http.StatusConflict, msgExists)
+ 	default:
+ 		// The underlying error goes to the log only, never into the response.
+-		// Stores must return errors that are already free of connection details.
++		// Redaction is the injected logger's job: main wraps its handler with
++		// internal/redact (Task 3), so the raw error text is passed on here.
+ 		h.logger.Error("request failed",
+ 			"route", r.Pattern,
+ 			"device_id", deviceID,
+ 			"error", err.Error())
+ 		writeError(w, http.StatusInternalServerError, msgInternal)
+ 	}
+ }
+ 
+ func writeError(w http.ResponseWriter, status int, msg string) {
+ 	writeJSON(w, status, map[string]string{"error": msg})
+diff --git a/internal/httpapi/httpapi_test.go b/internal/httpapi/httpapi_test.go
+index 82a083b..116dc07 100644
+--- a/internal/httpapi/httpapi_test.go
++++ b/internal/httpapi/httpapi_test.go
+@@ -7,46 +7,54 @@ import (
+ 	"errors"
+ 	"log/slog"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"strings"
+ 	"sync"
+ 	"testing"
+ 	"time"
+ 
+ 	"github.com/laodao-ai/demo-temp-monitor/internal/httpapi"
++	"github.com/laodao-ai/demo-temp-monitor/internal/redact"
+ 	"github.com/laodao-ai/demo-temp-monitor/internal/service"
+ 	"github.com/laodao-ai/demo-temp-monitor/internal/store"
+ 	"github.com/laodao-ai/demo-temp-monitor/internal/store/memstore"
+ )
+ 
+ const maxBody = 1 << 20
+ 
++const (
++	testPassword = "s3cret-xyz"
++	testConnURL  = "postgres://monitor:" + testPassword + "@db.internal:7432/temp_monitor_demo"
++)
++
+ const invalidIDMsg = "invalid device id: must match ^[a-z0-9-]{1,64}$"
+ 
+ type env struct {
+ 	h    http.Handler
+ 	ms   *memstore.Store
+ 	logs *bytes.Buffer
+ }
+ 
+ func newEnv(t *testing.T, threshold float64) env {
+ 	t.Helper()
+ 	ms := memstore.New()
+ 	return newEnvWith(t, threshold, ms, ms)
+ }
+ 
+ // newEnvWith serves st over HTTP; ms is kept for direct inspection.
+ func newEnvWith(t *testing.T, threshold float64, st store.Store, ms *memstore.Store) env {
+ 	t.Helper()
+ 	logs := &bytes.Buffer{}
+-	logger := slog.New(slog.NewJSONHandler(logs, nil))
++	// The same wrapper main installs in production (Task 3): httpapi relies
++	// on the injected logger to redact connection details.
++	logger := slog.New(redact.Handler(slog.NewJSONHandler(logs, nil), testConnURL))
+ 	svc := service.New(st, threshold, logger)
+ 	return env{h: httpapi.NewHandler(svc, logger), ms: ms, logs: logs}
+ }
+ 
+ func (e env) do(method, path, body string) *httptest.ResponseRecorder {
+ 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+ 	rec := httptest.NewRecorder()
+ 	e.h.ServeHTTP(rec, req)
+ 	return rec
+ }
+@@ -420,25 +428,25 @@ func TestAlarmOnlyForSuccessfulOverThresholdReports(t *testing.T) {
+ 	if rec.Code != 201 {
+ 		t.Fatalf("status = %d", rec.Code)
+ 	}
+ 	if n := alarmCount(t, e.logs); n != 1 {
+ 		t.Fatalf("alarms = %d, want 1", n)
+ 	}
+ }
+ 
+ // ---- 5xx and RUN-04 ----
+ 
+-// brokenStore returns an error that carries a recognizable secret-looking
+-// text, to prove it never reaches the response body.
++// brokenStore returns an error that carries the connection string and
++// password, to prove they reach neither the response body nor the log.
+ type brokenStore struct{ store.Store }
+ 
+-var errBoom = errors.New("boom: connection to db.internal failed")
++var errBoom = errors.New("boom: dial " + testConnURL + " failed, password " + testPassword)
+ 
+ func (brokenStore) CreateDevice(context.Context, string) (store.Device, error) {
+ 	return store.Device{}, errBoom
+ }
+ func (brokenStore) DeleteDevice(context.Context, string) error { return errBoom }
+ func (brokenStore) AddReading(context.Context, string, float64) (store.Reading, error) {
+ 	return store.Reading{}, errBoom
+ }
+ 
+ func TestStoreErrorsGive500WithFixedBodyAndErrorLog(t *testing.T) {
+@@ -451,35 +459,37 @@ func TestStoreErrorsGive500WithFixedBodyAndErrorLog(t *testing.T) {
+ 	}
+ 	for _, c := range cases {
+ 		t.Run(c.name, func(t *testing.T) {
+ 			ms := memstore.New()
+ 			e := newEnvWith(t, 50, brokenStore{ms}, ms)
+ 			rec := e.do(c.method, c.path, c.body)
+ 			errorBody(t, rec, 500, "internal error")
+ 			if strings.Contains(rec.Body.String(), "boom") {
+ 				t.Error("response leaks the underlying error")
+ 			}
++			for _, secret := range []string{testPassword, testConnURL} {
++				if strings.Contains(e.logs.String(), secret) {
++					t.Errorf("log leaks %q: %s", secret, e.logs)
++				}
++			}
+ 			var found map[string]any
+ 			for _, l := range logLines(t, e.logs) {
+ 				if l["level"] == "ERROR" {
+ 					found = l
+ 				}
+ 			}
+ 			if found == nil {
+ 				t.Fatalf("no ERROR log; logs: %s", e.logs)
+ 			}
+ 			if found["route"] != c.route || found["device_id"] != c.deviceID {
+ 				t.Errorf("ERROR record = %v, want route=%q device_id=%q", found, c.route, c.deviceID)
+ 			}
+-			if s, _ := found["error"].(string); !strings.Contains(s, "boom") {
+-				t.Errorf("ERROR record lacks the underlying error: %v", found)
+-			}
+ 			if n := alarmCount(t, e.logs); n != 0 {
+ 				t.Errorf("alarms = %d, want 0", n)
+ 			}
+ 		})
+ 	}
+ }
+ 
+ // deadlineStore records the context deadline it was called with.
+ type deadlineStore struct {
+ 	store.Store
+diff --git a/internal/redact/redact.go b/internal/redact/redact.go
+new file mode 100644
+index 0000000..703f6db
+--- /dev/null
++++ b/internal/redact/redact.go
+@@ -0,0 +1,113 @@
++// Package redact removes database connection strings and passwords from text
++// and from log records, so driver errors can be logged safely.
++package redact
++
++import (
++	"context"
++	"log/slog"
++	"strings"
++)
++
++const mask = "***"
++
++// withheld replaces an error's text when the password cannot be extracted:
++// the text could then contain an unmasked password fragment.
++const withheld = "error details withheld"
++
++// password returns the raw substring between the first ":" after the scheme
++// and the last "@" of connURL. ok is false when it cannot be extracted.
++func password(connURL string) (string, bool) {
++	_, rest, found := strings.Cut(connURL, "://")
++	if !found {
++		return "", false
++	}
++	colon := strings.Index(rest, ":")
++	at := strings.LastIndex(rest, "@")
++	if colon < 0 || at < 0 || colon >= at {
++		return "", false
++	}
++	pw := rest[colon+1 : at]
++	if pw == "" {
++		return "", false
++	}
++	return pw, true
++}
++
++// Text replaces the whole connection string, then the password, with "***".
++// ok is false when the password cannot be extracted from connURL; the caller
++// should then print a fixed message instead of the text.
++func Text(text, connURL string) (out string, ok bool) {
++	if connURL == "" {
++		return text, false
++	}
++	out = strings.ReplaceAll(text, connURL, mask)
++	pw, ok := password(connURL)
++	if !ok {
++		return out, false
++	}
++	return strings.ReplaceAll(out, pw, mask), true
++}
++
++// Handler wraps inner so every record's message and string attributes
++// (including error values and group members) pass through Text.
++func Handler(inner slog.Handler, connURL string) slog.Handler {
++	_, ok := password(connURL)
++	return &handler{inner: inner, connURL: connURL, pwOK: ok}
++}
++
++type handler struct {
++	inner   slog.Handler
++	connURL string
++	pwOK    bool
++}
++
++func (h *handler) Enabled(ctx context.Context, l slog.Level) bool {
++	return h.inner.Enabled(ctx, l)
++}
++
++func (h *handler) Handle(ctx context.Context, r slog.Record) error {
++	msg, _ := Text(r.Message, h.connURL)
++	nr := slog.NewRecord(r.Time, r.Level, msg, r.PC)
++	r.Attrs(func(a slog.Attr) bool {
++		nr.AddAttrs(h.attr(a))
++		return true
++	})
++	return h.inner.Handle(ctx, nr)
++}
++
++func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
++	cleaned := make([]slog.Attr, len(attrs))
++	for i, a := range attrs {
++		cleaned[i] = h.attr(a)
++	}
++	return &handler{inner: h.inner.WithAttrs(cleaned), connURL: h.connURL, pwOK: h.pwOK}
++}
++
++func (h *handler) WithGroup(name string) slog.Handler {
++	return &handler{inner: h.inner.WithGroup(name), connURL: h.connURL, pwOK: h.pwOK}
++}
++
++func (h *handler) attr(a slog.Attr) slog.Attr {
++	v := a.Value.Resolve()
++	switch v.Kind() {
++	case slog.KindString:
++		s, _ := Text(v.String(), h.connURL)
++		return slog.String(a.Key, s)
++	case slog.KindGroup:
++		members := v.Group()
++		cleaned := make([]any, len(members))
++		for i, m := range members {
++			cleaned[i] = h.attr(m)
++		}
++		return slog.Group(a.Key, cleaned...)
++	case slog.KindAny:
++		if err, ok := v.Any().(error); ok {
++			if !h.pwOK {
++				return slog.String(a.Key, withheld)
++			}
++			s, _ := Text(err.Error(), h.connURL)
++			return slog.String(a.Key, s)
++		}
++	}
++	return slog.Attr{Key: a.Key, Value: v}
++}
+diff --git a/internal/redact/redact_test.go b/internal/redact/redact_test.go
+new file mode 100644
+index 0000000..8421fca
+--- /dev/null
++++ b/internal/redact/redact_test.go
+@@ -0,0 +1,99 @@
++package redact_test
++
++import (
++	"bytes"
++	"errors"
++	"log/slog"
++	"strings"
++	"testing"
++
++	"github.com/laodao-ai/demo-temp-monitor/internal/redact"
++)
++
++// Passwords are deliberately not URL-encoded.
++var cases = []struct {
++	name, pw, fragment string
++}{
++	{"semicolon-paren", "p(ss;w", "ss;w"},
++	{"ampersand", "p&ss", "p&ss"},
++	{"bad-percent", "p%zz", "%zz"},
++	{"at-and-hash", "p@ss#w", "ss#w"},
++}
++
++func connURL(pw string) string {
++	return "postgres://user:" + pw + "@127.0.0.1:7432/db"
++}
++
++func TestTextRemovesPasswordAndFragments(t *testing.T) {
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			u := connURL(c.pw)
++			in := "dial failed for " + u + "; also saw " + c.pw + " alone"
++			got, ok := redact.Text(in, u)
++			if !ok {
++				t.Fatal("ok = false, want true")
++			}
++			want := "dial failed for ***; also saw *** alone"
++			if got != want {
++				t.Errorf("got %q, want %q", got, want)
++			}
++			if strings.Contains(got, c.fragment) {
++				t.Errorf("fragment %q survived: %q", c.fragment, got)
++			}
++		})
++	}
++}
++
++func TestTextReportsUnextractablePassword(t *testing.T) {
++	for _, u := range []string{
++		"postgres://user@127.0.0.1/db",  // no colon before the @
++		"postgres://user:@127.0.0.1/db", // empty password
++		"not-a-url",
++		"",
++	} {
++		got, ok := redact.Text("failed: "+u, u)
++		if ok {
++			t.Errorf("url %q: ok = true, want false", u)
++		}
++		if u != "" && strings.Contains(got, u) {
++			t.Errorf("url %q: whole URL survived: %q", u, got)
++		}
++	}
++}
++
++func TestHandlerRedactsMessageAttrsErrorsAndGroups(t *testing.T) {
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			u := connURL(c.pw)
++			var buf bytes.Buffer
++			log := slog.New(redact.Handler(slog.NewTextHandler(&buf, nil), u)).
++				With("preset", "x "+c.pw)
++			log.Error("msg "+u,
++				"error", errors.New("dial "+u+" bad "+c.pw),
++				"plain", c.pw,
++				slog.Group("g", "inner", "has "+c.pw))
++			out := buf.String()
++			for _, bad := range []string{c.pw, c.fragment, u} {
++				if strings.Contains(out, bad) {
++					t.Errorf("output contains %q: %s", bad, out)
++				}
++			}
++			if !strings.Contains(out, "***") {
++				t.Errorf("no mask in output: %s", out)
++			}
++		})
++	}
++}
++
++func TestHandlerWithholdsErrorTextWhenPasswordUnextractable(t *testing.T) {
++	var buf bytes.Buffer
++	log := slog.New(redact.Handler(slog.NewTextHandler(&buf, nil), "postgres://user@h/db"))
++	log.Error("x", "error", errors.New("secret-detail"))
++	out := buf.String()
++	if strings.Contains(out, "secret-detail") {
++		t.Errorf("error text leaked: %s", out)
++	}
++	if !strings.Contains(out, "error details withheld") {
++		t.Errorf("fixed text missing: %s", out)
++	}
++}
+diff --git a/openspec/changes/temp-monitor-baseline/impl-reports/task2-service-http-fix1.md b/openspec/changes/temp-monitor-baseline/impl-reports/task2-service-http-fix1.md
+new file mode 100644
+index 0000000..86ae7d7
+--- /dev/null
++++ b/openspec/changes/temp-monitor-baseline/impl-reports/task2-service-http-fix1.md
+@@ -0,0 +1,27 @@
++# Task 2 fix1：5xx ERROR 日志脱敏
++
++## 改了什么
++- 新增 `internal/redact`：
++  - `Text(text, connURL) (string, bool)`：先替换连接串整体，再替换口令（scheme 后第一个 `:` 到最后一个 `@` 的原始子串）为 `***`。口令提取不出时 ok=false。
++  - `Handler(inner, connURL) slog.Handler`：对 message、字符串属性、error 值、group 成员、`With` 预置属性做同样替换。口令提取不出时，error 值改为固定文案 `error details withheld`。
++- `internal/httpapi/httpapi.go`：去掉「Stores must return errors that are already free of connection details」注释，改为说明脱敏由注入的 logger 负责，main 在 Task 3 接入。签名未改。
++- `internal/httpapi/httpapi_test.go`：测试 logger 用 `redact.Handler` 包装；存储替身返回含连接串与口令 `s3cret-xyz` 的错误；断言 500、固定响应体、ERROR 日志存在、日志全文不含口令与连接串；删掉断言日志含 "boom" 的那条。
++
++## 新增 / 修改的测试
++- `TestTextRemovesPasswordAndFragments`（口令 `p(ss;w`、`p&ss`、`p%zz`、`p@ss#w`）
++- `TestTextReportsUnextractablePassword`
++- `TestHandlerRedactsMessageAttrsErrorsAndGroups`
++- `TestHandlerWithholdsErrorTextWhenPasswordUnextractable`
++- 修改 `TestStoreErrorsGive500WithFixedBodyAndErrorLog`
++
++## 红 -> 绿证据（当场破坏被测点，已恢复）
++- 不替换口令：redact 的 Text、Handler 两个测试和 httpapi 的 `TestStoreErrorsGive500WithFixedBodyAndErrorLog` 变红。
++- 不处理 error 值：`TestHandlerRedactsMessageAttrsErrorsAndGroups`、`TestHandlerWithholdsErrorTextWhenPasswordUnextractable` 变红。
++- 不替换连接串整体：`TestTextRemovesPasswordAndFragments`、`TestTextReportsUnextractablePassword` 变红。
++
++## 命令输出尾部
++`go vet ./...`：无输出。
++`go test -race -count=1 ./...`：config、httpapi、redact、service、memstore 均 ok。
++
++## 未做
++- 未接入 main（Task 3）。

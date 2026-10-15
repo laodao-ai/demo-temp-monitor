@@ -1,0 +1,176 @@
+# Review package: 08b8e33..6ef9972 (Task 2 fix round 2)
+
+## Commits
+6ef9972 fix(httpapi): 5xx 日志传 error 值，口令提取不出时输出固定文案
+
+## Files changed
+ internal/httpapi/httpapi.go                        |  5 ++--
+ internal/httpapi/httpapi_test.go                   | 33 +++++++++++++++++++++-
+ internal/redact/redact.go                          |  2 ++
+ .../impl-reports/task2-service-http-fix2.md        | 14 +++++++++
+ 4 files changed, 51 insertions(+), 3 deletions(-)
+
+## Diff
+diff --git a/internal/httpapi/httpapi.go b/internal/httpapi/httpapi.go
+index cdc9f69..39c7331 100644
+--- a/internal/httpapi/httpapi.go
++++ b/internal/httpapi/httpapi.go
+@@ -142,25 +142,26 @@ func (h *handler) writeServiceError(w http.ResponseWriter, r *http.Request, devi
+ 	switch {
+ 	case errors.Is(err, service.ErrInvalidID):
+ 		writeError(w, http.StatusBadRequest, msgInvalidID)
+ 	case errors.Is(err, store.ErrNotFound):
+ 		writeError(w, http.StatusNotFound, msgNotFound)
+ 	case errors.Is(err, store.ErrAlreadyExists):
+ 		writeError(w, http.StatusConflict, msgExists)
+ 	default:
+ 		// The underlying error goes to the log only, never into the response.
+ 		// Redaction is the injected logger's job: main wraps its handler with
+-		// internal/redact (Task 3), so the raw error text is passed on here.
++		// internal/redact (Task 3). Pass the error value, not err.Error():
++		// redact only withholds the text for error values, not for strings.
+ 		h.logger.Error("request failed",
+ 			"route", r.Pattern,
+ 			"device_id", deviceID,
+-			"error", err.Error())
++			"error", err)
+ 		writeError(w, http.StatusInternalServerError, msgInternal)
+ 	}
+ }
+ 
+ func writeError(w http.ResponseWriter, status int, msg string) {
+ 	writeJSON(w, status, map[string]string{"error": msg})
+ }
+ 
+ func writeJSON(w http.ResponseWriter, status int, v any) {
+ 	w.Header().Set("Content-Type", "application/json")
+diff --git a/internal/httpapi/httpapi_test.go b/internal/httpapi/httpapi_test.go
+index 116dc07..b32fe4d 100644
+--- a/internal/httpapi/httpapi_test.go
++++ b/internal/httpapi/httpapi_test.go
+@@ -36,25 +36,31 @@ type env struct {
+ }
+ 
+ func newEnv(t *testing.T, threshold float64) env {
+ 	t.Helper()
+ 	ms := memstore.New()
+ 	return newEnvWith(t, threshold, ms, ms)
+ }
+ 
+ // newEnvWith serves st over HTTP; ms is kept for direct inspection.
+ func newEnvWith(t *testing.T, threshold float64, st store.Store, ms *memstore.Store) env {
++	t.Helper()
++	return newEnvConn(t, threshold, st, ms, testConnURL)
++}
++
++// newEnvConn is newEnvWith with the connection string the redactor is told about.
++func newEnvConn(t *testing.T, threshold float64, st store.Store, ms *memstore.Store, connURL string) env {
+ 	t.Helper()
+ 	logs := &bytes.Buffer{}
+ 	// The same wrapper main installs in production (Task 3): httpapi relies
+ 	// on the injected logger to redact connection details.
+-	logger := slog.New(redact.Handler(slog.NewJSONHandler(logs, nil), testConnURL))
++	logger := slog.New(redact.Handler(slog.NewJSONHandler(logs, nil), connURL))
+ 	svc := service.New(st, threshold, logger)
+ 	return env{h: httpapi.NewHandler(svc, logger), ms: ms, logs: logs}
+ }
+ 
+ func (e env) do(method, path, body string) *httptest.ResponseRecorder {
+ 	req := httptest.NewRequest(method, path, strings.NewReader(body))
+ 	rec := httptest.NewRecorder()
+ 	e.h.ServeHTTP(rec, req)
+ 	return rec
+ }
+@@ -483,20 +489,45 @@ func TestStoreErrorsGive500WithFixedBodyAndErrorLog(t *testing.T) {
+ 			if found["route"] != c.route || found["device_id"] != c.deviceID {
+ 				t.Errorf("ERROR record = %v, want route=%q device_id=%q", found, c.route, c.deviceID)
+ 			}
+ 			if n := alarmCount(t, e.logs); n != 0 {
+ 				t.Errorf("alarms = %d, want 0", n)
+ 			}
+ 		})
+ 	}
+ }
+ 
++// A connection string without an extractable password cannot be redacted
++// reliably, so the log must carry the fixed text instead of the raw error.
++func TestStoreErrorWithoutExtractablePasswordIsWithheldInLog(t *testing.T) {
++	const noPasswordURL = "postgres://user@h/db"
++	ms := memstore.New()
++	e := newEnvConn(t, 50, brokenStore{ms}, ms, noPasswordURL)
++	rec := e.do("POST", "/devices", `{"id":"sensor-01"}`)
++	errorBody(t, rec, 500, "internal error")
++	if strings.Contains(e.logs.String(), "boom") {
++		t.Errorf("log carries the raw error text: %s", e.logs)
++	}
++	var found map[string]any
++	for _, l := range logLines(t, e.logs) {
++		if l["level"] == "ERROR" {
++			found = l
++		}
++	}
++	if found == nil {
++		t.Fatalf("no ERROR log; logs: %s", e.logs)
++	}
++	if found["error"] != "error details withheld" {
++		t.Errorf("error attr = %v, want %q", found["error"], "error details withheld")
++	}
++}
++
+ // deadlineStore records the context deadline it was called with.
+ type deadlineStore struct {
+ 	store.Store
+ 	deadline time.Time
+ 	ok       bool
+ }
+ 
+ func (d *deadlineStore) AddReading(ctx context.Context, id string, t float64) (store.Reading, error) {
+ 	d.deadline, d.ok = ctx.Deadline()
+ 	return d.Store.AddReading(ctx, id, t)
+diff --git a/internal/redact/redact.go b/internal/redact/redact.go
+index 703f6db..dd80b6b 100644
+--- a/internal/redact/redact.go
++++ b/internal/redact/redact.go
+@@ -80,20 +80,22 @@ func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
+ 	for i, a := range attrs {
+ 		cleaned[i] = h.attr(a)
+ 	}
+ 	return &handler{inner: h.inner.WithAttrs(cleaned), connURL: h.connURL, pwOK: h.pwOK}
+ }
+ 
+ func (h *handler) WithGroup(name string) slog.Handler {
+ 	return &handler{inner: h.inner.WithGroup(name), connURL: h.connURL, pwOK: h.pwOK}
+ }
+ 
++// attr handles strings, groups and error values only; other KindAny values
++// pass through unchanged.
+ func (h *handler) attr(a slog.Attr) slog.Attr {
+ 	v := a.Value.Resolve()
+ 	switch v.Kind() {
+ 	case slog.KindString:
+ 		s, _ := Text(v.String(), h.connURL)
+ 		return slog.String(a.Key, s)
+ 	case slog.KindGroup:
+ 		members := v.Group()
+ 		cleaned := make([]any, len(members))
+ 		for i, m := range members {
+diff --git a/openspec/changes/temp-monitor-baseline/impl-reports/task2-service-http-fix2.md b/openspec/changes/temp-monitor-baseline/impl-reports/task2-service-http-fix2.md
+new file mode 100644
+index 0000000..3d267d6
+--- /dev/null
++++ b/openspec/changes/temp-monitor-baseline/impl-reports/task2-service-http-fix2.md
+@@ -0,0 +1,14 @@
++# Task 2 fix 第 2 轮
++
++## 改动
++- `internal/httpapi/httpapi.go`：5xx ERROR 日志改传 error 值（`"error", err`），redact 的 error 分支生效；注释同步。
++- `internal/redact/redact.go`：`attr` 加注释，说明只处理字符串、组与 error 值。
++- `internal/httpapi/httpapi_test.go`：新增 `newEnvConn`（可指定连接串），新增用例
++  `TestStoreErrorWithoutExtractablePasswordIsWithheldInLog`（连接串 `postgres://user@h/db`）。
++
++## 红 -> 绿
++- 修复前：该用例失败，日志 `error` 属性为底层错误原文（`boom: dial postgres://...`），期望 `error details withheld`。
++- 修复后：通过。期望文案是字面量，不由实现重算。
++
++## 命令
++- `go vet ./...` 无输出；`go test -race -count=1 ./...` 全部 ok（config、httpapi、redact、service、memstore）。

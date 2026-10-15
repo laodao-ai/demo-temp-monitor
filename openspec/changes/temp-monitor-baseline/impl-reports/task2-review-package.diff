@@ -1,0 +1,1171 @@
+# Review package: b10baa3106c3229a8595f87eea217453624fddac..85d79e9459db5db3bd3b2d0d6f2027f26ffd6e7a
+
+## Commits
+85d79e9 feat(service,httpapi): 业务逻辑与 HTTP 三个路由
+
+## Files changed
+ internal/httpapi/httpapi.go                        | 168 +++++++
+ internal/httpapi/httpapi_test.go                   | 541 +++++++++++++++++++++
+ internal/service/service.go                        |  66 +++
+ internal/service/service_test.go                   | 241 +++++++++
+ .../impl-reports/task2-brief.md                    |  11 +
+ .../impl-reports/task2-service-http.md             |  93 ++++
+ 6 files changed, 1120 insertions(+)
+
+## Diff
+diff --git a/internal/httpapi/httpapi.go b/internal/httpapi/httpapi.go
+new file mode 100644
+index 0000000..c42b62e
+--- /dev/null
++++ b/internal/httpapi/httpapi.go
+@@ -0,0 +1,168 @@
++// Package httpapi exposes the three routes and maps service errors to HTTP
++// status codes. Error texts are defined in design "Error Messages".
++package httpapi
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"log/slog"
++	"net/http"
++	"time"
++
++	"github.com/laodao-ai/demo-temp-monitor/internal/service"
++	"github.com/laodao-ai/demo-temp-monitor/internal/store"
++)
++
++const (
++	maxBodyBytes = 1 << 20
++	// storeTimeout bounds every store call made for one request.
++	storeTimeout = 5 * time.Second
++
++	msgInvalidJSON  = "invalid JSON body"
++	msgBodyTooLarge = "request body too large"
++	msgIDRequired   = "id is required"
++	msgInvalidID    = "invalid device id: must match " + service.IDPattern
++	msgTempRequired = "temperature_c is required"
++	msgTempNotNum   = "temperature_c must be a number"
++	msgNotFound     = "device not found"
++	msgExists       = "device already registered"
++	msgInternal     = "internal error"
++)
++
++type handler struct {
++	svc    *service.Service
++	logger *slog.Logger
++}
++
++// NewHandler returns the router with the three routes registered.
++// Other paths and wrong methods get ServeMux's plain-text 404 / 405.
++func NewHandler(svc *service.Service, logger *slog.Logger) http.Handler {
++	h := &handler{svc: svc, logger: logger}
++	mux := http.NewServeMux()
++	mux.HandleFunc("POST /devices", h.register)
++	mux.HandleFunc("DELETE /devices/{id}", h.deregister)
++	mux.HandleFunc("POST /devices/{id}/readings", h.report)
++	return mux
++}
++
++func (h *handler) register(w http.ResponseWriter, r *http.Request) {
++	// A pointer tells a missing id apart from an empty one.
++	var req struct {
++		ID *string `json:"id"`
++	}
++	if msg := readJSON(w, r, &req, "id", msgInvalidID); msg != "" {
++		writeError(w, http.StatusBadRequest, msg)
++		return
++	}
++	if req.ID == nil {
++		writeError(w, http.StatusBadRequest, msgIDRequired)
++		return
++	}
++
++	ctx, cancel := context.WithTimeout(r.Context(), storeTimeout)
++	defer cancel()
++	d, err := h.svc.Register(ctx, *req.ID)
++	if err != nil {
++		h.writeServiceError(w, r, *req.ID, err)
++		return
++	}
++	writeJSON(w, http.StatusCreated, map[string]any{
++		"id":            d.ID,
++		"registered_at": d.RegisteredAt.Format(time.RFC3339Nano),
++	})
++}
++
++func (h *handler) deregister(w http.ResponseWriter, r *http.Request) {
++	id := r.PathValue("id")
++	ctx, cancel := context.WithTimeout(r.Context(), storeTimeout)
++	defer cancel()
++	if err := h.svc.Deregister(ctx, id); err != nil {
++		h.writeServiceError(w, r, id, err)
++		return
++	}
++	w.WriteHeader(http.StatusNoContent)
++}
++
++func (h *handler) report(w http.ResponseWriter, r *http.Request) {
++	id := r.PathValue("id")
++	// A pointer tells a missing temperature_c apart from 0.
++	var req struct {
++		TemperatureC *float64 `json:"temperature_c"`
++	}
++	if msg := readJSON(w, r, &req, "temperature_c", msgTempNotNum); msg != "" {
++		writeError(w, http.StatusBadRequest, msg)
++		return
++	}
++	if req.TemperatureC == nil {
++		writeError(w, http.StatusBadRequest, msgTempRequired)
++		return
++	}
++
++	ctx, cancel := context.WithTimeout(r.Context(), storeTimeout)
++	defer cancel()
++	rd, err := h.svc.Report(ctx, id, *req.TemperatureC)
++	if err != nil {
++		h.writeServiceError(w, r, id, err)
++		return
++	}
++	writeJSON(w, http.StatusCreated, map[string]any{
++		"id":            rd.ID,
++		"device_id":     rd.DeviceID,
++		"temperature_c": rd.TemperatureC,
++		"recorded_at":   rd.RecordedAt.Format(time.RFC3339Nano),
++	})
++}
++
++// readJSON reads the whole body (at most 1 MiB), then unmarshals it into dst.
++// json.Unmarshal rejects empty input and non-whitespace content after the
++// first value. It returns the 400 message, or "" on success. A type error on
++// field typeField gets typeMsg; any other decode failure is "invalid JSON body".
++func readJSON(w http.ResponseWriter, r *http.Request, dst any, typeField, typeMsg string) string {
++	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
++	if err != nil {
++		var tooBig *http.MaxBytesError
++		if errors.As(err, &tooBig) {
++			return msgBodyTooLarge
++		}
++		return msgInvalidJSON
++	}
++	if err := json.Unmarshal(body, dst); err != nil {
++		var typeErr *json.UnmarshalTypeError
++		if errors.As(err, &typeErr) && typeErr.Field == typeField {
++			return typeMsg
++		}
++		return msgInvalidJSON
++	}
++	return ""
++}
++
++func (h *handler) writeServiceError(w http.ResponseWriter, r *http.Request, deviceID string, err error) {
++	switch {
++	case errors.Is(err, service.ErrInvalidID):
++		writeError(w, http.StatusBadRequest, msgInvalidID)
++	case errors.Is(err, store.ErrNotFound):
++		writeError(w, http.StatusNotFound, msgNotFound)
++	case errors.Is(err, store.ErrAlreadyExists):
++		writeError(w, http.StatusConflict, msgExists)
++	default:
++		// The underlying error goes to the log only, never into the response.
++		// Stores must return errors that are already free of connection details.
++		h.logger.Error("request failed",
++			"route", r.Pattern,
++			"device_id", deviceID,
++			"error", err.Error())
++		writeError(w, http.StatusInternalServerError, msgInternal)
++	}
++}
++
++func writeError(w http.ResponseWriter, status int, msg string) {
++	writeJSON(w, status, map[string]string{"error": msg})
++}
++
++func writeJSON(w http.ResponseWriter, status int, v any) {
++	w.Header().Set("Content-Type", "application/json")
++	w.WriteHeader(status)
++	_ = json.NewEncoder(w).Encode(v)
++}
+diff --git a/internal/httpapi/httpapi_test.go b/internal/httpapi/httpapi_test.go
+new file mode 100644
+index 0000000..82a083b
+--- /dev/null
++++ b/internal/httpapi/httpapi_test.go
+@@ -0,0 +1,541 @@
++package httpapi_test
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"log/slog"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/laodao-ai/demo-temp-monitor/internal/httpapi"
++	"github.com/laodao-ai/demo-temp-monitor/internal/service"
++	"github.com/laodao-ai/demo-temp-monitor/internal/store"
++	"github.com/laodao-ai/demo-temp-monitor/internal/store/memstore"
++)
++
++const maxBody = 1 << 20
++
++const invalidIDMsg = "invalid device id: must match ^[a-z0-9-]{1,64}$"
++
++type env struct {
++	h    http.Handler
++	ms   *memstore.Store
++	logs *bytes.Buffer
++}
++
++func newEnv(t *testing.T, threshold float64) env {
++	t.Helper()
++	ms := memstore.New()
++	return newEnvWith(t, threshold, ms, ms)
++}
++
++// newEnvWith serves st over HTTP; ms is kept for direct inspection.
++func newEnvWith(t *testing.T, threshold float64, st store.Store, ms *memstore.Store) env {
++	t.Helper()
++	logs := &bytes.Buffer{}
++	logger := slog.New(slog.NewJSONHandler(logs, nil))
++	svc := service.New(st, threshold, logger)
++	return env{h: httpapi.NewHandler(svc, logger), ms: ms, logs: logs}
++}
++
++func (e env) do(method, path, body string) *httptest.ResponseRecorder {
++	req := httptest.NewRequest(method, path, strings.NewReader(body))
++	rec := httptest.NewRecorder()
++	e.h.ServeHTTP(rec, req)
++	return rec
++}
++
++func (e env) register(t *testing.T, id string) {
++	t.Helper()
++	if rec := e.do("POST", "/devices", `{"id":"`+id+`"}`); rec.Code != 201 {
++		t.Fatalf("register %s: status %d body %s", id, rec.Code, rec.Body)
++	}
++}
++
++func (e env) readings(t *testing.T, id string) int {
++	t.Helper()
++	got, err := e.ms.ListReadings(context.Background(), id)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return len(got)
++}
++
++// errorBody asserts the response is an error with the exact message.
++func errorBody(t *testing.T, rec *httptest.ResponseRecorder, wantCode int, wantMsg string) {
++	t.Helper()
++	if rec.Code != wantCode {
++		t.Fatalf("status = %d, want %d (body %s)", rec.Code, wantCode, rec.Body)
++	}
++	var got map[string]string
++	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
++		t.Fatalf("body is not a JSON object of strings: %q", rec.Body)
++	}
++	if len(got) != 1 || got["error"] != wantMsg {
++		t.Fatalf("body = %v, want only error=%q", got, wantMsg)
++	}
++}
++
++// logLines returns the parsed JSON log records.
++func logLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
++	t.Helper()
++	var out []map[string]any
++	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
++		if line == "" {
++			continue
++		}
++		var rec map[string]any
++		if err := json.Unmarshal([]byte(line), &rec); err != nil {
++			t.Fatalf("log line is not JSON: %q", line)
++		}
++		out = append(out, rec)
++	}
++	return out
++}
++
++func alarmCount(t *testing.T, buf *bytes.Buffer) int {
++	n := 0
++	for _, rec := range logLines(t, buf) {
++		if rec["msg"] == "over-temperature alarm" {
++			n++
++		}
++	}
++	return n
++}
++
++// ---- DEV-01 ----
++
++func TestRegisterCreatesDevice(t *testing.T) {
++	e := newEnv(t, 50)
++	rec := e.do("POST", "/devices", `{"id": "sensor-01"}`)
++	if rec.Code != 201 {
++		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
++	}
++	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
++		t.Errorf("Content-Type = %q", ct)
++	}
++	var got struct {
++		ID           string `json:"id"`
++		RegisteredAt string `json:"registered_at"`
++	}
++	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
++		t.Fatal(err)
++	}
++	if got.ID != "sensor-01" {
++		t.Errorf("id = %q", got.ID)
++	}
++	if _, err := time.Parse(time.RFC3339, got.RegisteredAt); err != nil {
++		t.Errorf("registered_at %q is not RFC 3339: %v", got.RegisteredAt, err)
++	}
++	if rec := e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 20}`); rec.Code != 201 {
++		t.Errorf("report after register: status %d", rec.Code)
++	}
++}
++
++func TestRegisterDuplicateKeepsReadings(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 20}`)
++	errorBody(t, e.do("POST", "/devices", `{"id":"sensor-01"}`), 409, "device already registered")
++	if n := e.readings(t, "sensor-01"); n != 1 {
++		t.Errorf("readings = %d, want 1", n)
++	}
++}
++
++func TestRegisterRejectsBadRequests(t *testing.T) {
++	cases := []struct {
++		name, body, msg string
++	}{
++		{"uppercase and underscore", `{"id":"Sensor_01"}`, invalidIDMsg},
++		{"empty id", `{"id":""}`, invalidIDMsg},
++		{"65 chars", `{"id":"` + strings.Repeat("a", 65) + `"}`, invalidIDMsg},
++		{"id is a number", `{"id":5}`, invalidIDMsg},
++		{"missing id", `{}`, "id is required"},
++		{"null id", `{"id":null}`, "id is required"},
++		{"not JSON", `not json`, "invalid JSON body"},
++		{"empty body", ``, "invalid JSON body"},
++		{"whitespace only body", " \n ", "invalid JSON body"},
++		{"top-level array", `[]`, "invalid JSON body"},
++		{"trailing content", `{"id":"sensor-01"}garbage`, "invalid JSON body"},
++		{"two objects", `{"id":"sensor-01"}{"id":"sensor-02"}`, "invalid JSON body"},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			e := newEnv(t, 50)
++			errorBody(t, e.do("POST", "/devices", c.body), 400, c.msg)
++		})
++	}
++}
++
++func TestRegisterRejectsBadRequestsWithoutCreating(t *testing.T) {
++	e := newEnv(t, 50)
++	e.do("POST", "/devices", `{"id":"Sensor_01"}`)
++	e.do("POST", "/devices", `{}`)
++	// If a device had been created, DELETE would return 204 instead of 404.
++	errorBody(t, e.do("DELETE", "/devices/sensor_01", ""), 400, invalidIDMsg)
++	errorBody(t, e.do("DELETE", "/devices/sensor-01", ""), 404, "device not found")
++}
++
++func TestRegisterIgnoresUnknownFieldsAndContentType(t *testing.T) {
++	e := newEnv(t, 50)
++	req := httptest.NewRequest("POST", "/devices", strings.NewReader(`{"id":"sensor-01","color":"red"}`))
++	req.Header.Set("Content-Type", "text/plain")
++	rec := httptest.NewRecorder()
++	e.h.ServeHTTP(rec, req)
++	if rec.Code != 201 {
++		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
++	}
++}
++
++func TestRegisterBodyTooLarge(t *testing.T) {
++	e := newEnv(t, 50)
++	big := `{"id":"sensor-01","pad":"` + strings.Repeat("x", maxBody) + `"}`
++	errorBody(t, e.do("POST", "/devices", big), 400, "request body too large")
++}
++
++// ---- DEV-02 / DEV-03 ----
++
++func TestDeleteRemovesDeviceAndReadings(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	for i := 0; i < 3; i++ {
++		e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 20}`)
++	}
++	rec := e.do("DELETE", "/devices/sensor-01", "")
++	if rec.Code != 204 || rec.Body.Len() != 0 {
++		t.Fatalf("status = %d, body %q, want 204 and empty body", rec.Code, rec.Body)
++	}
++	if n := e.readings(t, "sensor-01"); n != 0 {
++		t.Errorf("readings = %d, want 0", n)
++	}
++	errorBody(t, e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 20}`), 404, "device not found")
++}
++
++func TestDeleteUnregistered(t *testing.T) {
++	e := newEnv(t, 50)
++	errorBody(t, e.do("DELETE", "/devices/ghost-01", ""), 404, "device not found")
++}
++
++func TestDeleteInvalidID(t *testing.T) {
++	e := newEnv(t, 50)
++	errorBody(t, e.do("DELETE", "/devices/BAD_ID", ""), 400, invalidIDMsg)
++}
++
++func TestReRegisterAfterDeleteHasNoReadings(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 20}`)
++	if rec := e.do("DELETE", "/devices/sensor-01", ""); rec.Code != 204 {
++		t.Fatalf("delete status = %d", rec.Code)
++	}
++	e.register(t, "sensor-01")
++	if n := e.readings(t, "sensor-01"); n != 0 {
++		t.Errorf("readings = %d, want 0", n)
++	}
++}
++
++// ---- ING-01 ----
++
++func TestReportStoresReading(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	rec := e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 23.5}`)
++	if rec.Code != 201 {
++		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
++	}
++	var got struct {
++		ID           int64   `json:"id"`
++		DeviceID     string  `json:"device_id"`
++		TemperatureC float64 `json:"temperature_c"`
++		RecordedAt   string  `json:"recorded_at"`
++	}
++	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
++		t.Fatal(err)
++	}
++	if got.ID == 0 || got.DeviceID != "sensor-01" || got.TemperatureC != 23.5 {
++		t.Errorf("body = %+v", got)
++	}
++	if _, err := time.Parse(time.RFC3339, got.RecordedAt); err != nil {
++		t.Errorf("recorded_at %q is not RFC 3339: %v", got.RecordedAt, err)
++	}
++	if n := e.readings(t, "sensor-01"); n != 1 {
++		t.Errorf("readings = %d, want 1", n)
++	}
++}
++
++func TestReportZeroAndNegativeAreValid(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	for _, body := range []string{`{"temperature_c": 0}`, `{"temperature_c": -12.5}`} {
++		if rec := e.do("POST", "/devices/sensor-01/readings", body); rec.Code != 201 {
++			t.Errorf("%s: status = %d, body %s", body, rec.Code, rec.Body)
++		}
++	}
++	got, _ := e.ms.ListReadings(context.Background(), "sensor-01")
++	if len(got) != 2 || got[0].TemperatureC != 0 || got[1].TemperatureC != -12.5 {
++		t.Errorf("stored = %+v", got)
++	}
++}
++
++func TestReportIgnoresUnknownFieldsAndContentType(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	req := httptest.NewRequest("POST", "/devices/sensor-01/readings",
++		strings.NewReader(`{"temperature_c": 20, "unit": "C"}`))
++	req.Header.Set("Content-Type", "text/plain")
++	rec := httptest.NewRecorder()
++	e.h.ServeHTTP(rec, req)
++	if rec.Code != 201 {
++		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
++	}
++}
++
++func TestReportAllowsTrailingWhitespace(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	if rec := e.do("POST", "/devices/sensor-01/readings", "{\"temperature_c\": 20}\n  \n"); rec.Code != 201 {
++		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
++	}
++}
++
++// ---- ING-02 ----
++
++func TestReportUnregisteredStoresNothing(t *testing.T) {
++	e := newEnv(t, 50)
++	errorBody(t, e.do("POST", "/devices/ghost-01/readings", `{"temperature_c": 20}`), 404, "device not found")
++	if n := e.readings(t, "ghost-01"); n != 0 {
++		t.Errorf("readings = %d, want 0", n)
++	}
++}
++
++func TestConcurrentDeleteAndReportLeavesNoReadings(t *testing.T) {
++	for i := 0; i < 50; i++ {
++		e := newEnv(t, 50)
++		e.register(t, "sensor-01")
++		var wg sync.WaitGroup
++		var reportCode, deleteCode int
++		wg.Add(2)
++		go func() {
++			defer wg.Done()
++			reportCode = e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 20}`).Code
++		}()
++		go func() { defer wg.Done(); deleteCode = e.do("DELETE", "/devices/sensor-01", "").Code }()
++		wg.Wait()
++		if reportCode != 201 && reportCode != 404 {
++			t.Fatalf("report status = %d, want 201 or 404", reportCode)
++		}
++		if deleteCode != 204 {
++			t.Fatalf("delete status = %d, want 204", deleteCode)
++		}
++		if n := e.readings(t, "sensor-01"); n != 0 {
++			t.Fatalf("readings left = %d", n)
++		}
++	}
++}
++
++// ---- ING-03 ----
++
++func TestReportRejectsBadRequests(t *testing.T) {
++	cases := []struct {
++		name, body, msg string
++	}{
++		{"missing temperature_c", `{"temp": 23.5}`, "temperature_c is required"},
++		{"null temperature_c", `{"temperature_c": null}`, "temperature_c is required"},
++		{"string temperature_c", `{"temperature_c": "hot"}`, "temperature_c must be a number"},
++		{"bool temperature_c", `{"temperature_c": true}`, "temperature_c must be a number"},
++		{"number out of float64 range", `{"temperature_c": 1e999}`, "temperature_c must be a number"},
++		{"not JSON", `nope`, "invalid JSON body"},
++		{"empty body", ``, "invalid JSON body"},
++		{"trailing content", `{"temperature_c": 23.5}garbage`, "invalid JSON body"},
++		{"top-level number", `23.5`, "invalid JSON body"},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			e := newEnv(t, 50)
++			e.register(t, "sensor-01")
++			errorBody(t, e.do("POST", "/devices/sensor-01/readings", c.body), 400, c.msg)
++			if n := e.readings(t, "sensor-01"); n != 0 {
++				t.Errorf("readings = %d, want 0", n)
++			}
++		})
++	}
++}
++
++func TestReportInvalidPathID(t *testing.T) {
++	e := newEnv(t, 50)
++	errorBody(t, e.do("POST", "/devices/BAD_ID/readings", `{"temperature_c": 20}`), 400, invalidIDMsg)
++}
++
++func TestReportBodyTooLargeSingleValue(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	body := `{"temperature_c": 20, "pad": "` + strings.Repeat("x", maxBody) + `"}`
++	errorBody(t, e.do("POST", "/devices/sensor-01/readings", body), 400, "request body too large")
++	if n := e.readings(t, "sensor-01"); n != 0 {
++		t.Errorf("readings = %d, want 0", n)
++	}
++}
++
++func TestReportBodyTooLargeTrailingWhitespace(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	body := `{"temperature_c": 20}` + strings.Repeat(" ", maxBody)
++	errorBody(t, e.do("POST", "/devices/sensor-01/readings", body), 400, "request body too large")
++	if n := e.readings(t, "sensor-01"); n != 0 {
++		t.Errorf("readings = %d, want 0", n)
++	}
++}
++
++func TestReportBodyExactlyOneMiBIsAccepted(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	const core = `{"temperature_c": 20}`
++	body := core + strings.Repeat(" ", maxBody-len(core))
++	if len(body) != maxBody {
++		t.Fatalf("test body is %d bytes", len(body))
++	}
++	if rec := e.do("POST", "/devices/sensor-01/readings", body); rec.Code != 201 {
++		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
++	}
++}
++
++// ---- ALM through HTTP ----
++
++func TestAlarmOnlyForSuccessfulOverThresholdReports(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 50}`)
++	e.do("POST", "/devices/ghost-01/readings", `{"temperature_c": 80}`)
++	e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": "80"}`)
++	if n := alarmCount(t, e.logs); n != 0 {
++		t.Fatalf("alarms = %d, want 0", n)
++	}
++	rec := e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 55.0}`)
++	if rec.Code != 201 {
++		t.Fatalf("status = %d", rec.Code)
++	}
++	if n := alarmCount(t, e.logs); n != 1 {
++		t.Fatalf("alarms = %d, want 1", n)
++	}
++}
++
++// ---- 5xx and RUN-04 ----
++
++// brokenStore returns an error that carries a recognizable secret-looking
++// text, to prove it never reaches the response body.
++type brokenStore struct{ store.Store }
++
++var errBoom = errors.New("boom: connection to db.internal failed")
++
++func (brokenStore) CreateDevice(context.Context, string) (store.Device, error) {
++	return store.Device{}, errBoom
++}
++func (brokenStore) DeleteDevice(context.Context, string) error { return errBoom }
++func (brokenStore) AddReading(context.Context, string, float64) (store.Reading, error) {
++	return store.Reading{}, errBoom
++}
++
++func TestStoreErrorsGive500WithFixedBodyAndErrorLog(t *testing.T) {
++	cases := []struct {
++		name, method, path, body, route, deviceID string
++	}{
++		{"register", "POST", "/devices", `{"id":"sensor-01"}`, "POST /devices", "sensor-01"},
++		{"delete", "DELETE", "/devices/sensor-01", "", "DELETE /devices/{id}", "sensor-01"},
++		{"report", "POST", "/devices/sensor-01/readings", `{"temperature_c": 80}`, "POST /devices/{id}/readings", "sensor-01"},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			ms := memstore.New()
++			e := newEnvWith(t, 50, brokenStore{ms}, ms)
++			rec := e.do(c.method, c.path, c.body)
++			errorBody(t, rec, 500, "internal error")
++			if strings.Contains(rec.Body.String(), "boom") {
++				t.Error("response leaks the underlying error")
++			}
++			var found map[string]any
++			for _, l := range logLines(t, e.logs) {
++				if l["level"] == "ERROR" {
++					found = l
++				}
++			}
++			if found == nil {
++				t.Fatalf("no ERROR log; logs: %s", e.logs)
++			}
++			if found["route"] != c.route || found["device_id"] != c.deviceID {
++				t.Errorf("ERROR record = %v, want route=%q device_id=%q", found, c.route, c.deviceID)
++			}
++			if s, _ := found["error"].(string); !strings.Contains(s, "boom") {
++				t.Errorf("ERROR record lacks the underlying error: %v", found)
++			}
++			if n := alarmCount(t, e.logs); n != 0 {
++				t.Errorf("alarms = %d, want 0", n)
++			}
++		})
++	}
++}
++
++// deadlineStore records the context deadline it was called with.
++type deadlineStore struct {
++	store.Store
++	deadline time.Time
++	ok       bool
++}
++
++func (d *deadlineStore) AddReading(ctx context.Context, id string, t float64) (store.Reading, error) {
++	d.deadline, d.ok = ctx.Deadline()
++	return d.Store.AddReading(ctx, id, t)
++}
++
++func TestStoreCallsCarryFiveSecondDeadline(t *testing.T) {
++	ms := memstore.New()
++	ds := &deadlineStore{Store: ms}
++	e := newEnvWith(t, 50, ds, ms)
++	e.register(t, "sensor-01")
++	start := time.Now()
++	if rec := e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 20}`); rec.Code != 201 {
++		t.Fatalf("status = %d", rec.Code)
++	}
++	if !ds.ok {
++		t.Fatal("store context has no deadline")
++	}
++	left := ds.deadline.Sub(start)
++	if left < 4*time.Second || left > 5*time.Second+time.Second/2 {
++		t.Errorf("deadline is %v after request start, want about 5s", left)
++	}
++}
++
++func TestStoreContextFollowsRequestCancellation(t *testing.T) {
++	ms := memstore.New()
++	e := newEnvWith(t, 50, ctxStore{ms}, ms)
++	e.register(t, "sensor-01")
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	req := httptest.NewRequest("POST", "/devices/sensor-01/readings", strings.NewReader(`{"temperature_c": 20}`)).WithContext(ctx)
++	rec := httptest.NewRecorder()
++	e.h.ServeHTTP(rec, req)
++	errorBody(t, rec, 500, "internal error")
++}
++
++// ctxStore fails when the context is already done, like a real driver would.
++type ctxStore struct{ store.Store }
++
++func (c ctxStore) AddReading(ctx context.Context, id string, t float64) (store.Reading, error) {
++	if err := ctx.Err(); err != nil {
++		return store.Reading{}, err
++	}
++	return c.Store.AddReading(ctx, id, t)
++}
++
++func TestReportBodyOneByteOverLimitIsRejected(t *testing.T) {
++	e := newEnv(t, 50)
++	e.register(t, "sensor-01")
++	const core = `{"temperature_c": 20}`
++	body := core + strings.Repeat(" ", maxBody+1-len(core))
++	errorBody(t, e.do("POST", "/devices/sensor-01/readings", body), 400, "request body too large")
++}
+diff --git a/internal/service/service.go b/internal/service/service.go
+new file mode 100644
+index 0000000..c427e2a
+--- /dev/null
++++ b/internal/service/service.go
+@@ -0,0 +1,66 @@
++// Package service holds the business rules: ID validation, register,
++// deregister, report, and the over-temperature alarm. It depends only on
++// store.Store.
++package service
++
++import (
++	"context"
++	"errors"
++	"log/slog"
++	"regexp"
++
++	"github.com/laodao-ai/demo-temp-monitor/internal/store"
++)
++
++// ErrInvalidID means the device ID does not match IDPattern.
++var ErrInvalidID = errors.New("invalid device id")
++
++// IDPattern is the device ID format (DEV-01). Go's $ matches only at the end
++// of the text, so a trailing newline is rejected.
++const IDPattern = `^[a-z0-9-]{1,64}$`
++
++var idRegexp = regexp.MustCompile(IDPattern)
++
++// Service has no mutable state after construction.
++type Service struct {
++	store      store.Store
++	thresholdC float64
++	logger     *slog.Logger
++}
++
++func New(s store.Store, thresholdC float64, logger *slog.Logger) *Service {
++	return &Service{store: s, thresholdC: thresholdC, logger: logger}
++}
++
++func (s *Service) Register(ctx context.Context, id string) (store.Device, error) {
++	if !idRegexp.MatchString(id) {
++		return store.Device{}, ErrInvalidID
++	}
++	return s.store.CreateDevice(ctx, id)
++}
++
++func (s *Service) Deregister(ctx context.Context, id string) error {
++	if !idRegexp.MatchString(id) {
++		return ErrInvalidID
++	}
++	return s.store.DeleteDevice(ctx, id)
++}
++
++// Report stores a reading. The alarm is written only after the store call
++// succeeded, and only when the temperature is strictly above the threshold.
++func (s *Service) Report(ctx context.Context, id string, tempC float64) (store.Reading, error) {
++	if !idRegexp.MatchString(id) {
++		return store.Reading{}, ErrInvalidID
++	}
++	r, err := s.store.AddReading(ctx, id, tempC)
++	if err != nil {
++		return store.Reading{}, err
++	}
++	if tempC > s.thresholdC {
++		s.logger.Warn("over-temperature alarm",
++			"device_id", id,
++			"temperature_c", tempC,
++			"threshold_c", s.thresholdC)
++	}
++	return r, nil
++}
+diff --git a/internal/service/service_test.go b/internal/service/service_test.go
+new file mode 100644
+index 0000000..9859167
+--- /dev/null
++++ b/internal/service/service_test.go
+@@ -0,0 +1,241 @@
++package service_test
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"log/slog"
++	"strings"
++	"testing"
++
++	"github.com/laodao-ai/demo-temp-monitor/internal/service"
++	"github.com/laodao-ai/demo-temp-monitor/internal/store"
++	"github.com/laodao-ai/demo-temp-monitor/internal/store/memstore"
++)
++
++// logRecord is one parsed slog JSON line.
++type logRecord struct {
++	Level        string  `json:"level"`
++	Msg          string  `json:"msg"`
++	DeviceID     string  `json:"device_id"`
++	TemperatureC float64 `json:"temperature_c"`
++	ThresholdC   float64 `json:"threshold_c"`
++}
++
++// alarms returns the records in buf whose msg is the alarm message.
++func alarms(t *testing.T, buf *bytes.Buffer) []logRecord {
++	t.Helper()
++	var out []logRecord
++	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
++		if line == "" {
++			continue
++		}
++		var rec logRecord
++		if err := json.Unmarshal([]byte(line), &rec); err != nil {
++			t.Fatalf("log line is not JSON: %q: %v", line, err)
++		}
++		if rec.Msg == "over-temperature alarm" {
++			out = append(out, rec)
++		}
++	}
++	return out
++}
++
++func newSvc(t *testing.T, threshold float64, s store.Store) (*service.Service, *bytes.Buffer) {
++	t.Helper()
++	buf := &bytes.Buffer{}
++	logger := slog.New(slog.NewJSONHandler(buf, nil))
++	return service.New(s, threshold, logger), buf
++}
++
++// failingStore fails every reading write; other calls go to the wrapped store.
++type failingStore struct{ store.Store }
++
++func (failingStore) AddReading(context.Context, string, float64) (store.Reading, error) {
++	return store.Reading{}, errors.New("disk on fire")
++}
++
++func TestRegisterValidatesID(t *testing.T) {
++	ctx := context.Background()
++	svc, _ := newSvc(t, 50, memstore.New())
++
++	invalid := []string{"Sensor_01", "", strings.Repeat("a", 65), "a b", "sensor-01\n", "传感器"}
++	for _, id := range invalid {
++		if _, err := svc.Register(ctx, id); !errors.Is(err, service.ErrInvalidID) {
++			t.Errorf("Register(%q) error = %v, want ErrInvalidID", id, err)
++		}
++	}
++	for _, id := range []string{"sensor-01", "a", strings.Repeat("a", 64), "0-9"} {
++		if _, err := svc.Register(ctx, id); err != nil {
++			t.Errorf("Register(%q) error = %v, want nil", id, err)
++		}
++	}
++}
++
++func TestRegisterDuplicate(t *testing.T) {
++	ctx := context.Background()
++	svc, _ := newSvc(t, 50, memstore.New())
++	if _, err := svc.Register(ctx, "sensor-01"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := svc.Register(ctx, "sensor-01"); !errors.Is(err, store.ErrAlreadyExists) {
++		t.Fatalf("second Register error = %v, want ErrAlreadyExists", err)
++	}
++}
++
++func TestDeregister(t *testing.T) {
++	ctx := context.Background()
++	ms := memstore.New()
++	svc, _ := newSvc(t, 50, ms)
++
++	if err := svc.Deregister(ctx, "BAD_ID"); !errors.Is(err, service.ErrInvalidID) {
++		t.Errorf("Deregister(BAD_ID) error = %v, want ErrInvalidID", err)
++	}
++	if err := svc.Deregister(ctx, "ghost-01"); !errors.Is(err, store.ErrNotFound) {
++		t.Errorf("Deregister(ghost-01) error = %v, want ErrNotFound", err)
++	}
++
++	// DEV-02 / DEV-03: readings go away, reports are rejected, re-register starts empty.
++	if _, err := svc.Register(ctx, "sensor-01"); err != nil {
++		t.Fatal(err)
++	}
++	for i := 0; i < 3; i++ {
++		if _, err := svc.Report(ctx, "sensor-01", 20); err != nil {
++			t.Fatal(err)
++		}
++	}
++	if err := svc.Deregister(ctx, "sensor-01"); err != nil {
++		t.Fatal(err)
++	}
++	if got, _ := ms.ListReadings(ctx, "sensor-01"); len(got) != 0 {
++		t.Errorf("readings after deregister = %d, want 0", len(got))
++	}
++	if _, err := svc.Report(ctx, "sensor-01", 20); !errors.Is(err, store.ErrNotFound) {
++		t.Errorf("Report after deregister error = %v, want ErrNotFound", err)
++	}
++	if _, err := svc.Register(ctx, "sensor-01"); err != nil {
++		t.Fatalf("re-register: %v", err)
++	}
++	if got, _ := ms.ListReadings(ctx, "sensor-01"); len(got) != 0 {
++		t.Errorf("readings after re-register = %d, want 0", len(got))
++	}
++}
++
++func TestReportStoresReading(t *testing.T) {
++	ctx := context.Background()
++	ms := memstore.New()
++	svc, _ := newSvc(t, 50, ms)
++	if _, err := svc.Register(ctx, "sensor-01"); err != nil {
++		t.Fatal(err)
++	}
++	for _, temp := range []float64{23.5, 0, -12.5} {
++		r, err := svc.Report(ctx, "sensor-01", temp)
++		if err != nil {
++			t.Fatalf("Report(%v): %v", temp, err)
++		}
++		if r.DeviceID != "sensor-01" || r.TemperatureC != temp {
++			t.Errorf("Report(%v) = %+v", temp, r)
++		}
++	}
++	if got, _ := ms.ListReadings(ctx, "sensor-01"); len(got) != 3 {
++		t.Errorf("stored readings = %d, want 3", len(got))
++	}
++}
++
++func TestReportInvalidIDStoresNothing(t *testing.T) {
++	svc, buf := newSvc(t, 50, memstore.New())
++	if _, err := svc.Report(context.Background(), "BAD_ID", 99); !errors.Is(err, service.ErrInvalidID) {
++		t.Fatalf("error = %v, want ErrInvalidID", err)
++	}
++	if got := alarms(t, buf); len(got) != 0 {
++		t.Errorf("alarms = %v, want none", got)
++	}
++}
++
++func TestAlarmOverThreshold(t *testing.T) {
++	ctx := context.Background()
++	svc, buf := newSvc(t, 50, memstore.New())
++	if _, err := svc.Register(ctx, "sensor-01"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := svc.Report(ctx, "sensor-01", 55.0); err != nil {
++		t.Fatal(err)
++	}
++	got := alarms(t, buf)
++	if len(got) != 1 {
++		t.Fatalf("alarms = %d, want 1", len(got))
++	}
++	want := logRecord{Level: "WARN", Msg: "over-temperature alarm", DeviceID: "sensor-01", TemperatureC: 55, ThresholdC: 50}
++	if got[0] != want {
++		t.Errorf("alarm = %+v, want %+v", got[0], want)
++	}
++}
++
++func TestAlarmThresholdIsConfigurable(t *testing.T) {
++	ctx := context.Background()
++	svc, buf := newSvc(t, 30, memstore.New())
++	if _, err := svc.Register(ctx, "sensor-01"); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := svc.Report(ctx, "sensor-01", 31); err != nil {
++		t.Fatal(err)
++	}
++	got := alarms(t, buf)
++	if len(got) != 1 || got[0].ThresholdC != 30 {
++		t.Fatalf("alarms = %+v, want one with threshold_c=30", got)
++	}
++}
++
++func TestNoAlarmAtOrBelowThreshold(t *testing.T) {
++	ctx := context.Background()
++	svc, buf := newSvc(t, 50, memstore.New())
++	if _, err := svc.Register(ctx, "sensor-01"); err != nil {
++		t.Fatal(err)
++	}
++	for _, temp := range []float64{50.0, 23.5} {
++		if _, err := svc.Report(ctx, "sensor-01", temp); err != nil {
++			t.Fatalf("Report(%v): %v", temp, err)
++		}
++	}
++	if got := alarms(t, buf); len(got) != 0 {
++		t.Errorf("alarms = %+v, want none", got)
++	}
++}
++
++func TestNoAlarmForUnregisteredDevice(t *testing.T) {
++	svc, buf := newSvc(t, 50, memstore.New())
++	if _, err := svc.Report(context.Background(), "ghost-01", 80); !errors.Is(err, store.ErrNotFound) {
++		t.Fatalf("error = %v, want ErrNotFound", err)
++	}
++	if got := alarms(t, buf); len(got) != 0 {
++		t.Errorf("alarms = %+v, want none", got)
++	}
++}
++
++func TestNoAlarmWhenStoreFails(t *testing.T) {
++	svc, buf := newSvc(t, 50, failingStore{memstore.New()})
++	if _, err := svc.Report(context.Background(), "sensor-01", 80); err == nil {
++		t.Fatal("want error")
++	}
++	if got := alarms(t, buf); len(got) != 0 {
++		t.Errorf("alarms = %+v, want none", got)
++	}
++}
++
++func TestEveryOverTemperatureReadingAlarms(t *testing.T) {
++	ctx := context.Background()
++	svc, buf := newSvc(t, 50, memstore.New())
++	if _, err := svc.Register(ctx, "sensor-01"); err != nil {
++		t.Fatal(err)
++	}
++	for _, temp := range []float64{55.0, 56.0} {
++		if _, err := svc.Report(ctx, "sensor-01", temp); err != nil {
++			t.Fatal(err)
++		}
++	}
++	got := alarms(t, buf)
++	if len(got) != 2 || got[0].TemperatureC != 55 || got[1].TemperatureC != 56 {
++		t.Fatalf("alarms = %+v, want two with temperature_c 55 then 56", got)
++	}
++}
+diff --git a/openspec/changes/temp-monitor-baseline/impl-reports/task2-brief.md b/openspec/changes/temp-monitor-baseline/impl-reports/task2-brief.md
+new file mode 100644
+index 0000000..db22b62
+--- /dev/null
++++ b/openspec/changes/temp-monitor-baseline/impl-reports/task2-brief.md
+@@ -0,0 +1,11 @@
++### Task 2: 业务逻辑与 HTTP
++
++**Blocked-by:** 1
++**R-ID:** DEV-01, DEV-02, DEV-03, ING-01, ING-02, ING-03, ALM-01, ALM-02, ALM-03, ALM-04, RUN-04
++
++注册、注销、上报三项业务可经 HTTP 调用。上报温度严格大于阈值且入库成功时写一条 WARN 告警。错误按 design「API」与「Error Messages」映射为 400 / 404 / 409 / 500，5xx 响应体固定，底层错误只进日志且已脱敏。用 `httptest` 加内存实现验证，不需要数据库。
++
++- [ ] tasks 3.1：ID 校验、注册 / 注销 / 上报、告警日志（msg `over-temperature alarm`，字段 `device_id` / `temperature_c` / `threshold_c`）；单元测试覆盖等于阈值不告警、未注册不告警、存储出错不告警、连续两条各告警一次
++- [ ] tasks 3.2：三个路由；请求体读取与 1 MiB 上限、尾随内容、空请求体、未知字段、`temperature_c` 区分缺失与 0；存储调用用请求 context 派生的 5 秒超时；400 文案逐字按 design「Error Messages」；单元测试覆盖 DEV-01..03 与 ING-01..03 的全部场景
++- [ ] `go test -race ./...` 通过
++
+diff --git a/openspec/changes/temp-monitor-baseline/impl-reports/task2-service-http.md b/openspec/changes/temp-monitor-baseline/impl-reports/task2-service-http.md
+new file mode 100644
+index 0000000..ed262c6
+--- /dev/null
++++ b/openspec/changes/temp-monitor-baseline/impl-reports/task2-service-http.md
+@@ -0,0 +1,93 @@
++# Task 2 实现报告：业务逻辑与 HTTP
++
++## 做了什么
++
++- `internal/service/service.go`：`New(store, thresholdC, logger)`、`Register` / `Deregister` / `Report`。ID 正则 `^[a-z0-9-]{1,64}$` 在 service 校验，不合法返回 `service.ErrInvalidID`。入库成功且温度严格大于阈值才写 WARN `over-temperature alarm`（字段 `device_id` / `temperature_c` / `threshold_c`）。`service` 只 import `store`。
++- `internal/httpapi/httpapi.go`：`NewHandler(svc, logger)`，三个路由（`POST /devices`、`DELETE /devices/{id}`、`POST /devices/{id}/readings`）。
++  - 请求体 `io.ReadAll(http.MaxBytesReader(1 MiB))` 后 `json.Unmarshal`；超限、尾随内容、空体、顶层类型错误均 400；未知字段忽略；不检查 Content-Type。
++  - `id` 与 `temperature_c` 解码到指针，区分缺失与空 / 0。
++  - 每次存储调用用 `context.WithTimeout(r.Context(), 5s)`。
++  - 400 文案逐字取自 design「Error Messages」。404 / 409 文案按 design「API」。
++  - 其它错误：响应体固定 `{"error": "internal error"}`，ERROR 日志字段 `route`（`r.Pattern`）、`device_id`、`error`。
++- 没有改 tasks.md / tickets.md 复选框，没有打 checkpoint 标签。
++
++## 验收与 Scenario 对应的测试
++
++service（`internal/service/service_test.go`）：
++
++| 要求 | 测试 |
++|---|---|
++| DEV-01 ID 校验 | `TestRegisterValidatesID` |
++| DEV-01 重复注册 | `TestRegisterDuplicate` |
++| DEV-02 / DEV-03 注销、读数清空、再注册 | `TestDeregister` |
++| ING-01 入库（含 0、负数） | `TestReportStoresReading` |
++| ING-03 路径 ID 非法 | `TestReportInvalidIDStoresNothing` |
++| ALM-01 高于阈值告警 | `TestAlarmOverThreshold` |
++| ALM-01 阈值可配置 | `TestAlarmThresholdIsConfigurable` |
++| ALM-02 等于 / 低于阈值不告警 | `TestNoAlarmAtOrBelowThreshold` |
++| ALM-03 未注册不告警 | `TestNoAlarmForUnregisteredDevice` |
++| ALM-03 存储出错不告警 | `TestNoAlarmWhenStoreFails` |
++| ALM-04 连续两条各告警 | `TestEveryOverTemperatureReadingAlarms` |
++
++httpapi（`internal/httpapi/httpapi_test.go`）：
++
++| 要求 | 测试 |
++|---|---|
++| DEV-01 注册成功 | `TestRegisterCreatesDevice` |
++| DEV-01 重复注册 409、读数不变 | `TestRegisterDuplicateKeepsReadings` |
++| DEV-01 ID 不合法 / 缺失 / 非 JSON / 尾随 / 空体 | `TestRegisterRejectsBadRequests`、`TestRegisterRejectsBadRequestsWithoutCreating` |
++| DEV-01 未知字段、Content-Type | `TestRegisterIgnoresUnknownFieldsAndContentType` |
++| DEV-01 超 1 MiB | `TestRegisterBodyTooLarge` |
++| DEV-02 注销成功 204、读数清空、之后上报 404 | `TestDeleteRemovesDeviceAndReadings` |
++| DEV-02 注销未注册 404 | `TestDeleteUnregistered` |
++| DEV-02 注销 ID 非法 400 | `TestDeleteInvalidID` |
++| DEV-03 | `TestReRegisterAfterDeleteHasNoReadings` |
++| ING-01 | `TestReportStoresReading`、`TestReportZeroAndNegativeAreValid`、`TestReportIgnoresUnknownFieldsAndContentType`、`TestReportAllowsTrailingWhitespace` |
++| ING-02 未注册 404 | `TestReportUnregisteredStoresNothing` |
++| ING-02 注销与上报并发 | `TestConcurrentDeleteAndReportLeavesNoReadings`（50 轮，`-race`） |
++| ING-03 缺字段 / 非数字 / 非 JSON / 空体 / 尾随内容 | `TestReportRejectsBadRequests` |
++| ING-03 路径 ID 非法 | `TestReportInvalidPathID` |
++| ING-03 超 1 MiB（单个大值、尾随空白）与边界 | `TestReportBodyTooLargeSingleValue`、`TestReportBodyTooLargeTrailingWhitespace`、`TestReportBodyExactlyOneMiBIsAccepted`、`TestReportBodyOneByteOverLimitIsRejected` |
++| ALM-01..03 经 HTTP | `TestAlarmOnlyForSuccessfulOverThresholdReports` |
++| RUN-04 5xx 固定体、ERROR 日志、响应不泄漏底层错误 | `TestStoreErrorsGive500WithFixedBodyAndErrorLog`（三个路由） |
++| 5 秒存储超时、随请求取消 | `TestStoreCallsCarryFiveSecondDeadline`、`TestStoreContextFollowsRequestCancellation` |
++
++## 红绿确认
++
++两个包都先写测试，在实现缺失时编译失败（红），再写实现。之后对关键断言做了破坏验证，每次都确认测试变红后恢复：
++
++- `>` 改 `>=`：`TestNoAlarmAtOrBelowThreshold` 红。
++- 告警条件改 `true`：同上红。
++- 超时 5s 改 9s：`TestStoreCallsCarryFiveSecondDeadline` 红。
++- 去掉 `temperature_c` 缺失判断：`TestReportRejectsBadRequests` 红。
++- 5xx 日志不带底层错误：`TestStoreErrorsGive500WithFixedBodyAndErrorLog` 红。
++- 1 MiB 上限改为 +1：原有测试不红，补 `TestReportBodyOneByteOverLimitIsRejected` 后红。
++
++## 命令输出尾部
++
++`go vet ./...`：无输出。
++
++`go test -race -count=1 ./...`：
++
++```
++ok  	github.com/laodao-ai/demo-temp-monitor/internal/config	1.219s
++ok  	github.com/laodao-ai/demo-temp-monitor/internal/httpapi	1.508s
++ok  	github.com/laodao-ai/demo-temp-monitor/internal/service	1.245s
++?   	github.com/laodao-ai/demo-temp-monitor/internal/store	[no test files]
++ok  	github.com/laodao-ai/demo-temp-monitor/internal/store/memstore	1.240s
++?   	github.com/laodao-ai/demo-temp-monitor/internal/store/storetest	[no test files]
++```
++
++## 提交 SHA
++
++见返回值（报告随同一提交，无法写入自身 SHA）。
++
++## Concerns
++
++- 5xx ERROR 日志的 `error` 字段直接写底层错误文本，httpapi 没有脱敏。httpapi 不知道连接串，无从替换。Task 3 的 pgstore 返回给上层的错误应在 pgstore 内先脱敏（pgstore 持有连接串），或 main 注入脱敏后的 logger。选哪种由 Task 3 定，本票没有预建脱敏函数。
++- 请求体顶层类型错误（如 `[]`、`23.5`）归为 `invalid JSON body`；`{"id": 5}` 归为 `invalid device id`。design 未规定这两种情形，按最接近的既有文案处理。
++- 路径 ID 非法与请求体错误同时存在时，先报请求体错误（先读体再进 service 校验 ID）。spec 未规定顺序。
++
++## 票外发现
++
++无。

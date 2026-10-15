@@ -72,9 +72,9 @@ Compliance（逐字）：
 
 注册、注销、上报三项业务可经 HTTP 调用。上报温度严格大于阈值且入库成功时写一条 WARN 告警。错误按 design「API」与「Error Messages」映射为 400 / 404 / 409 / 500，5xx 响应体固定，底层错误只进日志且已脱敏。用 `httptest` 加内存实现验证，不需要数据库。
 
-- [ ] tasks 3.1：ID 校验、注册 / 注销 / 上报、告警日志（msg `over-temperature alarm`，字段 `device_id` / `temperature_c` / `threshold_c`）；单元测试覆盖等于阈值不告警、未注册不告警、存储出错不告警、连续两条各告警一次
-- [ ] tasks 3.2：三个路由；请求体读取与 1 MiB 上限、尾随内容、空请求体、未知字段、`temperature_c` 区分缺失与 0；存储调用用请求 context 派生的 5 秒超时；400 文案逐字按 design「Error Messages」；单元测试覆盖 DEV-01..03 与 ING-01..03 的全部场景
-- [ ] `go test -race ./...` 通过
+- [x] tasks 3.1：ID 校验、注册 / 注销 / 上报、告警日志（msg `over-temperature alarm`，字段 `device_id` / `temperature_c` / `threshold_c`）；单元测试覆盖等于阈值不告警、未注册不告警、存储出错不告警、连续两条各告警一次
+- [x] tasks 3.2：三个路由；请求体读取与 1 MiB 上限、尾随内容、空请求体、未知字段、`temperature_c` 区分缺失与 0；存储调用用请求 context 派生的 5 秒超时；400 文案逐字按 design「Error Messages」；单元测试覆盖 DEV-01..03 与 ING-01..03 的全部场景
+- [x] `go test -race ./...` 通过
 
 ### Task 3: PostgreSQL 实现、服务进程与连真库测试
 
@@ -89,6 +89,7 @@ Compliance（逐字）：
 - [ ] tasks 2.7：PostgreSQL 实现的连真库契约测试（`//go:build integration`，函数名 `TestIntegration` 开头），另测 DB-05 的检查约束与级联删除，`it-` 设备在 Cleanup 中删除
 - [ ] tasks 3.3：服务进程，含该条列出的全部要求（`MaxConns=4`、5 秒 ping、表检查、启动 INFO、`ReadHeaderTimeout`、`Shutdown` 5 秒与超时 WARN、`Serve` 非预期错误退出 1、错误文本脱敏）
 - [ ] tasks 3.4：端到端连真库测试（`httptest.Server` + HTTP 层 + PostgreSQL 实现 + 缓冲区 logger），按 TST-08 的五步验证，`it-` 前缀并清理
+- [ ] 服务进程用 Task 2 新增的脱敏 slog 包装（以实际连接串构造）包住全部日志输出，HTTP 层 5xx 日志因此脱敏；端到端连真库测试的缓冲区 logger 同样经该包装（执行期 fold 自 Task 2 Spec 轴复审：同 capability、高耦合、低增量）
 - [ ] `go vet -tags integration ./...` 通过
 - [ ] tasks 3.5：手动验证不需要数据库的启动失败路径（缺 URL、阈值 `abc`、无人监听端口加口令 `s3cret-xyz`，以及四个未编码特殊字符口令），每种都退出 1、stderr 不含口令及其片段，输出贴进本票报告
 
