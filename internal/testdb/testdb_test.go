@@ -1,10 +1,12 @@
 package testdb
 
 import (
-	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/laodao-ai/demo-temp-monitor/internal/config"
 )
 
 func TestFindRoot(t *testing.T) {
@@ -34,33 +36,38 @@ func TestConfigFailure(t *testing.T) {
 	path := "/abs/repo/config/local.env"
 	cases := []struct {
 		name string
-		err  string
+		err  error
 		want string
 	}{
 		{
 			"missing url",
-			"TM_DATABASE_URL is not set",
+			config.ErrNoURL,
 			"TM_DATABASE_URL is not set; copy config/example.env to config/local.env and fill it in",
 		},
 		{
+			"invalid threshold",
+			config.ErrThresholdInvalid,
+			"TM_ALARM_THRESHOLD_C is invalid; must be a finite number, such as 50.0",
+		},
+		{
 			"missing equals shows the fixed file name",
-			path + ` line 3: missing "="`,
+			fmt.Errorf("%s line 3: %w", path, config.ErrMissingEquals),
 			`config/local.env line 3: missing "="; use KEY=VALUE`,
 		},
 		{
 			"unknown key",
-			path + " line 2: unknown key",
+			fmt.Errorf("%s line 2: %w", path, config.ErrUnknownKey),
 			"config/local.env line 2: unknown key; allowed keys: TM_DATABASE_URL, TM_LISTEN_ADDR, TM_ALARM_THRESHOLD_C",
 		},
 		{
 			"quoted value",
-			path + " line 5: value must not be quoted",
+			fmt.Errorf("%s line 5: %w", path, config.ErrQuotedValue),
 			"config/local.env line 5: value must not be quoted; remove the quotes",
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := configFailure(errors.New(c.err), path); got != c.want {
+			if got := configFailure(c.err, path); got != c.want {
 				t.Fatalf("got  %q\nwant %q", got, c.want)
 			}
 		})

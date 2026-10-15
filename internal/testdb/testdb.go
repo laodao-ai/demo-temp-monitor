@@ -19,9 +19,10 @@ import (
 const (
 	envFileName = "config/local.env"
 
-	hintNoURL    = "copy config/example.env to config/local.env and fill it in"
-	hintConnect  = "check the SSH tunnel and that the URL uses the session pool port 7432"
-	hintNoTables = "run scripts/db-reset.sh first"
+	hintNoURL     = "copy config/example.env to config/local.env and fill it in"
+	hintThreshold = "must be a finite number, such as 50.0"
+	hintConnect   = "check the SSH tunnel and that the URL uses the session pool port 7432"
+	hintNoTables  = "run scripts/db-reset.sh first"
 )
 
 // Open finds the repo root, reads the configuration, connects within 5 seconds,
@@ -83,13 +84,15 @@ func findRoot() (string, error) {
 func configFailure(err error, envPath string) string {
 	msg := strings.ReplaceAll(err.Error(), envPath, envFileName)
 	switch {
-	case strings.Contains(msg, config.KeyDatabaseURL+" is not set"):
+	case errors.Is(err, config.ErrNoURL):
 		return msg + "; " + hintNoURL
-	case strings.HasSuffix(msg, `missing "="`):
+	case errors.Is(err, config.ErrThresholdInvalid):
+		return msg + "; " + hintThreshold
+	case errors.Is(err, config.ErrMissingEquals):
 		return msg + "; use KEY=VALUE"
-	case strings.HasSuffix(msg, "unknown key"):
+	case errors.Is(err, config.ErrUnknownKey):
 		return msg + "; allowed keys: " + strings.Join([]string{config.KeyDatabaseURL, config.KeyListenAddr, config.KeyThreshold}, ", ")
-	case strings.HasSuffix(msg, "must not be quoted"):
+	case errors.Is(err, config.ErrQuotedValue):
 		return msg + "; remove the quotes"
 	default:
 		return msg

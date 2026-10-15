@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 统一测试入口：scripts/test.sh [unit|integration|all]
 # 计数口径与退出码见 openspec 的 design「Test Runner」。本脚本不读 config/local.env。
+# 不用 set -e：go test 失败是预期结果，要先记下退出码再解析 JSON 并汇总；
+# 失败路径都显式 exit，让每个退出码与 stderr 文案都由本脚本写明。
 
 # 切到仓根（脚本所在目录的上一级），从任何目录调用结果一样。
 # 不用外部命令 dirname：缺工具检查要在任何外部命令之前，且受控 PATH 下也要能跑。
@@ -39,12 +41,17 @@ total_fail=0
 total_skip=0
 zero_layer=0
 
+# count_filter 与 detail_filter 共用的两个包集合（输入是 slurp 后的事件数组）：
+# $pkgs_with_test_fail = 有用例级 fail 的包；$pkgs_fail = 有包级 fail 的包。
+pkg_fail_sets='
+  (map(select(.Test != null and .Action == "fail") | .Package) | unique) as $pkgs_with_test_fail
+  | (map(select(.Test == null and .Action == "fail" and .Package != null) | .Package) | unique) as $pkgs_fail
+'
+
 # 从 go test -json 的事件（slurp 成数组）算 "N M K"。
 # M = 用例级 fail 数 + 「有包级 fail 但该包没有任何用例级 fail」的包数。
 # 带 Test 字段才算用例；没有测试文件的包只产生包级 skip，不计入 K。
-count_filter='
-  (map(select(.Test != null and .Action == "fail") | .Package) | unique) as $pkgs_with_test_fail
-  | (map(select(.Test == null and .Action == "fail" and .Package != null) | .Package) | unique) as $pkgs_fail
+count_filter="$pkg_fail_sets"'
   | [
       (map(select(.Test != null and .Action == "pass")) | length),
       ((map(select(.Test != null and .Action == "fail")) | length)
@@ -55,10 +62,8 @@ count_filter='
 '
 
 # 打到 stderr 的内容：失败用例的 output、build-output、贡献了包级 fail 的包的包级 output。
-detail_filter='
-  (map(select(.Test != null and .Action == "fail") | .Package + "\u0000" + .Test)) as $failed_tests
-  | (map(select(.Test != null and .Action == "fail") | .Package) | unique) as $pkgs_with_test_fail
-  | (map(select(.Test == null and .Action == "fail" and .Package != null) | .Package) | unique) as $pkgs_fail
+detail_filter="$pkg_fail_sets"'
+  | (map(select(.Test != null and .Action == "fail") | .Package + "\u0000" + .Test)) as $failed_tests
   | (($pkgs_fail - $pkgs_with_test_fail)) as $pkgs_pkg_only
   | .[]
   | select(
@@ -68,6 +73,11 @@ detail_filter='
     )
   | .Output
 '
+
+jq_parse_failed() {
+  echo 'cannot parse go test -json output; see the jq error above' >&2
+  exit 1
+}
 
 # run_layer <层名> <go test 额外参数...>
 # 结果累加到 total_*；jq 解析失败时直接 exit 1。
@@ -81,14 +91,8 @@ run_layer() {
   go test -json -count=1 "$@" >"$json" || status=$?
 
   local counts
-  if ! counts="$(jq -s -r "$count_filter" "$json")"; then
-    echo 'cannot parse go test -json output; see the jq error above' >&2
-    exit 1
-  fi
-  if ! jq -s -j "$detail_filter" "$json" >&2; then
-    echo 'cannot parse go test -json output; see the jq error above' >&2
-    exit 1
-  fi
+  counts="$(jq -s -r "$count_filter" "$json")" || jq_parse_failed
+  jq -s -j "$detail_filter" "$json" >&2 || jq_parse_failed
 
   local n m k
   read -r n m k <<<"$counts"

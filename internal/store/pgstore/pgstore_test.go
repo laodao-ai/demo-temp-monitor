@@ -27,7 +27,7 @@ func TestMapErr(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := mapErr(c.err, c.code, c.sentinel); !errors.Is(got, c.want) {
+			if got := mapErr("op", c.err, c.code, c.sentinel); !errors.Is(got, c.want) {
 				t.Fatalf("got %v, want %v", got, c.want)
 			}
 		})

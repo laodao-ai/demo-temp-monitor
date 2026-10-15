@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"strconv"
@@ -18,6 +19,17 @@ const (
 
 	defaultListenAddr = "127.0.0.1:8080"
 	defaultThreshold  = 50.0
+)
+
+// Sentinel errors let callers pick a next-step hint with errors.Is instead of
+// matching message text. Each error message is fixed text that never contains a
+// value; the file-grammar ones are wrapped with "<path> line <n>: ".
+var (
+	ErrNoURL            = errors.New(KeyDatabaseURL + " is not set")
+	ErrThresholdInvalid = errors.New(KeyThreshold + " is invalid")
+	ErrMissingEquals    = errors.New(`missing "="`)
+	ErrUnknownKey       = errors.New("unknown key")
+	ErrQuotedValue      = errors.New("value must not be quoted")
 )
 
 // Config holds the three service settings.
@@ -51,7 +63,7 @@ func Load(getenv func(string) string, path string) (Config, error) {
 		AlarmThresholdC: defaultThreshold,
 	}
 	if cfg.DatabaseURL == "" {
-		return Config{}, fmt.Errorf("%s is not set", KeyDatabaseURL)
+		return Config{}, ErrNoURL
 	}
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = defaultListenAddr
@@ -59,7 +71,7 @@ func Load(getenv func(string) string, path string) (Config, error) {
 	if raw := pick(KeyThreshold); raw != "" {
 		v, err := strconv.ParseFloat(raw, 64)
 		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
-			return Config{}, fmt.Errorf("%s is invalid", KeyThreshold)
+			return Config{}, ErrThresholdInvalid
 		}
 		cfg.AlarmThresholdC = v
 	}
@@ -73,6 +85,13 @@ func parseFile(path string) (map[string]string, error) {
 		return nil, nil
 	}
 	if err != nil {
+		// Append only the errno text (permission denied, is a directory, ...).
+		// PathError.Error() would repeat the path, and file content is never
+		// part of the error.
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			return nil, fmt.Errorf("%s: cannot read file: %v", path, pathErr.Err)
+		}
 		return nil, fmt.Errorf("%s: cannot read file", path)
 	}
 
@@ -86,15 +105,15 @@ func parseFile(path string) (map[string]string, error) {
 		}
 		key, val, ok := strings.Cut(line, "=")
 		if !ok {
-			return nil, fmt.Errorf("%s line %d: missing \"=\"", path, n)
+			return nil, fmt.Errorf("%s line %d: %w", path, n, ErrMissingEquals)
 		}
 		key = strings.TrimSpace(key)
 		val = strings.TrimSpace(val)
 		if !knownKeys[key] {
-			return nil, fmt.Errorf("%s line %d: unknown key", path, n)
+			return nil, fmt.Errorf("%s line %d: %w", path, n, ErrUnknownKey)
 		}
 		if strings.HasPrefix(val, `"`) || strings.HasPrefix(val, `'`) {
-			return nil, fmt.Errorf("%s line %d: value must not be quoted", path, n)
+			return nil, fmt.Errorf("%s line %d: %w", path, n, ErrQuotedValue)
 		}
 		vals[key] = val
 	}

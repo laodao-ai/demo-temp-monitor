@@ -6,6 +6,7 @@ package pgstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -78,6 +79,7 @@ type Store struct {
 	pool *pgxpool.Pool
 }
 
+// New returns a Store that uses pool. The caller owns and closes the pool.
 func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
@@ -88,7 +90,7 @@ func (s *Store) CreateDevice(ctx context.Context, id string) (store.Device, erro
 		`INSERT INTO devices (id) VALUES ($1) RETURNING id, registered_at`, id,
 	).Scan(&d.ID, &d.RegisteredAt)
 	if err != nil {
-		return store.Device{}, mapErr(err, sqlStateUniqueViolation, store.ErrAlreadyExists)
+		return store.Device{}, mapErr("create device", err, sqlStateUniqueViolation, store.ErrAlreadyExists)
 	}
 	return d, nil
 }
@@ -96,7 +98,7 @@ func (s *Store) CreateDevice(ctx context.Context, id string) (store.Device, erro
 func (s *Store) DeleteDevice(ctx context.Context, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM devices WHERE id = $1`, id)
 	if err != nil {
-		return err
+		return fmt.Errorf("delete device: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return store.ErrNotFound
@@ -111,7 +113,7 @@ func (s *Store) AddReading(ctx context.Context, deviceID string, tempC float64) 
 		 RETURNING id, device_id, temperature_c, recorded_at`, deviceID, tempC,
 	).Scan(&r.ID, &r.DeviceID, &r.TemperatureC, &r.RecordedAt)
 	if err != nil {
-		return store.Reading{}, mapErr(err, sqlStateForeignKeyViolation, store.ErrNotFound)
+		return store.Reading{}, mapErr("add reading", err, sqlStateForeignKeyViolation, store.ErrNotFound)
 	}
 	return r, nil
 }
@@ -121,7 +123,7 @@ func (s *Store) ListReadings(ctx context.Context, deviceID string) ([]store.Read
 		`SELECT id, device_id, temperature_c, recorded_at
 		 FROM readings WHERE device_id = $1 ORDER BY id`, deviceID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list readings: %w", err)
 	}
 	defer rows.Close()
 	out, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (store.Reading, error) {
@@ -130,17 +132,18 @@ func (s *Store) ListReadings(ctx context.Context, deviceID string) ([]store.Read
 		return r, err
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list readings: %w", err)
 	}
 	return out, nil
 }
 
 // mapErr returns sentinel when err is a PostgreSQL error with the given
-// SQLSTATE, and err unchanged otherwise.
-func mapErr(err error, sqlState string, sentinel error) error {
+// SQLSTATE. Any other error is wrapped with op, so the log shows which
+// statement failed; %w keeps errors.Is/As and error-value redaction working.
+func mapErr(op string, err error, sqlState string, sentinel error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == sqlState {
 		return sentinel
 	}
-	return err
+	return fmt.Errorf("%s: %w", op, err)
 }

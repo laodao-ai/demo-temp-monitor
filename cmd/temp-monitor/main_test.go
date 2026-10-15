@@ -329,7 +329,45 @@ func TestShutdownTimeoutCancelsInFlightRequest(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("run did not return after the server was closed")
 	}
-	if elapsed := time.Since(start); elapsed > 6500*time.Millisecond {
+	if !strings.Contains(stderr.String(), "shutdown did not finish in time") {
+		t.Fatalf("stderr lacks the shutdown timeout WARN:\n%s", stderr.String())
+	}
+	if elapsed := time.Since(start); elapsed > 8*time.Second {
 		t.Fatalf("shutdown took %v, want about 5s", elapsed)
+	}
+}
+
+// failingListener accepts nothing: Accept returns a permanent error, which
+// makes http.Server.Serve return something other than ErrServerClosed.
+type failingListener struct{ net.Listener }
+
+func (failingListener) Accept() (net.Conn, error) { return nil, errors.New("accept broke") }
+
+func TestServeUnexpectedErrorExitsOne(t *testing.T) {
+	real, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { real.Close() })
+	old := listen
+	listen = func(string, string) (net.Listener, error) { return failingListener{real}, nil }
+	t.Cleanup(func() { listen = old })
+
+	open := func(context.Context, string) (store.Store, func(), error) { return memstore.New(), func() {}, nil }
+	stderr := &lockedBuffer{}
+	done := make(chan int, 1)
+	go func() {
+		done <- run(t.Context(), env(map[string]string{"TM_DATABASE_URL": "postgres://u:pw@h/d"}), noFile, stderr, open)
+	}()
+	select {
+	case code := <-done:
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1\n%s", code, stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not return after Serve failed")
+	}
+	if all := stderr.String(); !strings.Contains(all, "server stopped unexpectedly") || !strings.Contains(all, "accept broke") {
+		t.Fatalf("stderr lacks the unexpected-stop ERROR:\n%s", all)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/laodao-ai/demo-temp-monitor/internal/store"
 )
 
+// Store keeps devices and readings in maps. It is safe for concurrent use.
 type Store struct {
 	mu       sync.Mutex
 	devices  map[string]store.Device
@@ -16,6 +17,7 @@ type Store struct {
 	nextID   int64
 }
 
+// New returns an empty Store.
 func New() *Store {
 	return &Store{
 		devices:  map[string]store.Device{},
@@ -23,6 +25,7 @@ func New() *Store {
 	}
 }
 
+// CreateDevice registers id, or returns store.ErrAlreadyExists.
 func (s *Store) CreateDevice(_ context.Context, id string) (store.Device, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -34,6 +37,7 @@ func (s *Store) CreateDevice(_ context.Context, id string) (store.Device, error)
 	return d, nil
 }
 
+// DeleteDevice removes the device and its readings, or returns store.ErrNotFound.
 func (s *Store) DeleteDevice(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -45,6 +49,8 @@ func (s *Store) DeleteDevice(_ context.Context, id string) error {
 	return nil
 }
 
+// AddReading appends a reading with a store-wide increasing ID, or returns
+// store.ErrNotFound when the device is not registered.
 func (s *Store) AddReading(_ context.Context, deviceID string, tempC float64) (store.Reading, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -28,6 +28,7 @@ type Service struct {
 	logger     *slog.Logger
 }
 
+// New returns a Service that alarms on readings strictly above thresholdC.
 func New(s store.Store, thresholdC float64, logger *slog.Logger) *Service {
 	return &Service{store: s, thresholdC: thresholdC, logger: logger}
 }
@@ -41,6 +42,7 @@ func ValidateID(id string) error {
 	return nil
 }
 
+// Register validates id and creates the device.
 func (s *Service) Register(ctx context.Context, id string) (store.Device, error) {
 	if err := ValidateID(id); err != nil {
 		return store.Device{}, err
@@ -48,6 +50,7 @@ func (s *Service) Register(ctx context.Context, id string) (store.Device, error)
 	return s.store.CreateDevice(ctx, id)
 }
 
+// Deregister validates id and deletes the device with its readings.
 func (s *Service) Deregister(ctx context.Context, id string) error {
 	if err := ValidateID(id); err != nil {
 		return err

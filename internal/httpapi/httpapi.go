@@ -52,8 +52,8 @@ func (h *handler) register(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID *string `json:"id"`
 	}
-	if msg := readJSON(w, r, &req, "id", msgInvalidID); msg != "" {
-		writeError(w, http.StatusBadRequest, msg)
+	if err := readJSON(w, r, &req); err != nil {
+		writeBodyError(w, err, "id", msgInvalidID)
 		return
 	}
 	if req.ID == nil {
@@ -96,8 +96,8 @@ func (h *handler) report(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TemperatureC *float64 `json:"temperature_c"`
 	}
-	if msg := readJSON(w, r, &req, "temperature_c", msgTempNotNum); msg != "" {
-		writeError(w, http.StatusBadRequest, msg)
+	if err := readJSON(w, r, &req); err != nil {
+		writeBodyError(w, err, "temperature_c", msgTempNotNum)
 		return
 	}
 	if req.TemperatureC == nil {
@@ -120,27 +120,46 @@ func (h *handler) report(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// bodyError is a readJSON failure whose message is the 400 text as is.
+type bodyError string
+
+func (e bodyError) Error() string { return string(e) }
+
 // readJSON reads the whole body (at most 1 MiB), then unmarshals it into dst.
 // json.Unmarshal rejects empty input and non-whitespace content after the
-// first value. It returns the 400 message, or "" on success. A type error on
-// field typeField gets typeMsg; any other decode failure is "invalid JSON body".
-func readJSON(w http.ResponseWriter, r *http.Request, dst any, typeField, typeMsg string) string {
+// first value. On failure it returns a bodyError, or the *json.UnmarshalTypeError
+// itself so the caller can tell which field had the wrong type.
+func readJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			return msgBodyTooLarge
+			return bodyError(msgBodyTooLarge)
 		}
-		return msgInvalidJSON
+		return bodyError(msgInvalidJSON)
 	}
 	if err := json.Unmarshal(body, dst); err != nil {
 		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &typeErr) && typeErr.Field == typeField {
-			return typeMsg
+		if errors.As(err, &typeErr) {
+			return typeErr
 		}
-		return msgInvalidJSON
+		return bodyError(msgInvalidJSON)
 	}
-	return ""
+	return nil
+}
+
+// writeBodyError writes the 400 for a readJSON failure. A type error on
+// typeField gets typeMsg; any other decode failure is "invalid JSON body".
+func writeBodyError(w http.ResponseWriter, err error, typeField, typeMsg string) {
+	msg := err.Error()
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		msg = msgInvalidJSON
+		if typeErr.Field == typeField {
+			msg = typeMsg
+		}
+	}
+	writeError(w, http.StatusBadRequest, msg)
 }
 
 func (h *handler) writeServiceError(w http.ResponseWriter, r *http.Request, deviceID string, err error) {

@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -40,6 +39,9 @@ const (
 	hintNoTables  = "run scripts/db-reset.sh first"
 	hintListen    = "the port may be in use; free it or set TM_LISTEN_ADDR"
 )
+
+// listen opens the listening socket. Tests replace it to make Serve fail.
+var listen = net.Listen
 
 // openFunc connects to the database and checks the schema. close releases
 // the connections. Tests replace it so no database is needed.
@@ -104,7 +106,7 @@ func run(ctx context.Context, getenv func(string) string, envPath string, stderr
 	}
 	defer closeStore()
 
-	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	ln, err := listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		fail(stderr, fmt.Sprintf("cannot listen on %s: %v", cfg.ListenAddr, err), hintListen)
 		return 1
@@ -161,20 +163,18 @@ func fail(w io.Writer, text, hint string) {
 	fmt.Fprintln(w, text)
 }
 
-// configHint picks the next step for a config.Load error. The messages are
-// fixed texts from internal/config, so matching on them is safe.
+// configHint picks the next step for a config.Load error.
 func configHint(err error) string {
-	msg := err.Error()
 	switch {
-	case msg == config.KeyDatabaseURL+" is not set":
+	case errors.Is(err, config.ErrNoURL):
 		return hintNoURL
-	case msg == config.KeyThreshold+" is invalid":
+	case errors.Is(err, config.ErrThresholdInvalid):
 		return hintThreshold
-	case strings.HasSuffix(msg, `missing "="`):
+	case errors.Is(err, config.ErrMissingEquals):
 		return "use KEY=VALUE"
-	case strings.HasSuffix(msg, "unknown key"):
+	case errors.Is(err, config.ErrUnknownKey):
 		return "allowed keys: " + config.KeyDatabaseURL + ", " + config.KeyListenAddr + ", " + config.KeyThreshold
-	case strings.HasSuffix(msg, "must not be quoted"):
+	case errors.Is(err, config.ErrQuotedValue):
 		return "remove the quotes"
 	}
 	return ""

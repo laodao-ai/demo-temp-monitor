@@ -44,14 +44,21 @@ func Run(t *testing.T, newStore func(t *testing.T) store.Store) {
 	}
 }
 
-// newID returns "it-<random>" and deletes that device when the case ends.
-func newID(t *testing.T, s store.Store) string {
+// NewID returns a random "it-<hex>" device ID that matches the ID pattern.
+// It registers no cleanup; callers that insert the device must delete it.
+func NewID(t *testing.T) string {
 	t.Helper()
 	var b [6]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		t.Fatal(err)
 	}
-	id := "it-" + hex.EncodeToString(b[:])
+	return "it-" + hex.EncodeToString(b[:])
+}
+
+// newID returns NewID() and deletes that device when the case ends.
+func newID(t *testing.T, s store.Store) string {
+	t.Helper()
+	id := NewID(t)
 	t.Cleanup(func() {
 		// Independent context: t.Context() is already canceled during cleanup.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -111,7 +118,11 @@ func testDeleteCascades(t *testing.T, s store.Store) {
 	if _, err := s.CreateDevice(ctx, id); err != nil {
 		t.Fatalf("re-register: %v", err)
 	}
-	if got, _ := s.ListReadings(ctx, id); len(got) != 0 {
+	got, err = s.ListReadings(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
 		t.Fatalf("re-registered device has %d old readings", len(got))
 	}
 }
@@ -163,19 +174,56 @@ func testReadingOrder(t *testing.T, s store.Store) {
 	}
 }
 
-func testConcurrentCreate(t *testing.T, s store.Store) {
+// testListReadingsCopy checks that writing to a returned slice does not change
+// what the next ListReadings returns.
+func testListReadingsCopy(t *testing.T, s store.Store) {
 	ctx := t.Context()
 	id := newID(t, s)
-	errs := make([]error, concurrency)
+	if _, err := s.CreateDevice(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddReading(ctx, id, 21.5); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.ListReadings(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("got %d readings, want 1", len(first))
+	}
+	first[0].TemperatureC = -999
+	second, err := s.ListReadings(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].TemperatureC != 21.5 {
+		t.Fatalf("second ListReadings = %+v, want one reading of 21.5", second)
+	}
+}
+
+// fanOut runs fn(i) for i in [0, n) in parallel and returns the errors by index.
+func fanOut(n int, fn func(i int) error) []error {
+	errs := make([]error, n)
 	var wg sync.WaitGroup
 	for i := range errs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = s.CreateDevice(ctx, id)
+			errs[i] = fn(i)
 		}()
 	}
 	wg.Wait()
+	return errs
+}
+
+func testConcurrentCreate(t *testing.T, s store.Store) {
+	ctx := t.Context()
+	id := newID(t, s)
+	errs := fanOut(concurrency, func(int) error {
+		_, err := s.CreateDevice(ctx, id)
+		return err
+	})
 	ok, dup := 0, 0
 	for _, err := range errs {
 		switch {
@@ -198,16 +246,10 @@ func testConcurrentAddReading(t *testing.T, s store.Store) {
 	if _, err := s.CreateDevice(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	errs := make([]error, concurrency)
-	var wg sync.WaitGroup
-	for i := range errs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, errs[i] = s.AddReading(ctx, id, float64(i))
-		}()
-	}
-	wg.Wait()
+	errs := fanOut(concurrency, func(i int) error {
+		_, err := s.AddReading(ctx, id, float64(i))
+		return err
+	})
 	for _, err := range errs {
 		if err != nil {
 			t.Errorf("AddReading: %v", err)
@@ -229,22 +271,15 @@ func testConcurrentDeleteAndReport(t *testing.T, s store.Store) {
 		if _, err := s.CreateDevice(ctx, id); err != nil {
 			t.Fatal(err)
 		}
-		errs := make([]error, concurrency)
-		var delErr error
-		var wg sync.WaitGroup
-		for i := range errs {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				_, errs[i] = s.AddReading(ctx, id, float64(i))
-			}()
-		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			delErr = s.DeleteDevice(ctx, id)
-		}()
-		wg.Wait()
+		// Index `concurrency` is the delete; the rest are reports.
+		results := fanOut(concurrency+1, func(i int) error {
+			if i == concurrency {
+				return s.DeleteDevice(ctx, id)
+			}
+			_, err := s.AddReading(ctx, id, float64(i))
+			return err
+		})
+		errs, delErr := results[:concurrency], results[concurrency]
 
 		if delErr != nil {
 			t.Fatalf("round %d: DeleteDevice: %v", round, delErr)

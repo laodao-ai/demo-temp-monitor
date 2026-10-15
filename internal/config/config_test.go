@@ -167,3 +167,17 @@ func TestLoadFileErrors(t *testing.T) {
 		})
 	}
 }
+
+// An unreadable env file reports the errno text after the fixed prefix, and
+// nothing else from the OS error (it would repeat the path).
+func TestLoadUnreadableFileReportsCause(t *testing.T) {
+	dir := t.TempDir() // reading a directory fails with "is a directory"
+	_, err := Load(env(nil), dir)
+	if err == nil {
+		t.Fatal("want error")
+	}
+	want := dir + ": cannot read file: is a directory"
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
+}

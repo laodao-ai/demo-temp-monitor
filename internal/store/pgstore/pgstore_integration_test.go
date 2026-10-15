@@ -4,8 +4,6 @@ package pgstore_test
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
@@ -38,7 +36,7 @@ func TestIntegrationConstraints(t *testing.T) {
 	})
 
 	t.Run("PrimaryKeyRejectsDuplicate", func(t *testing.T) {
-		id := newTestID(t)
+		id := storetest.NewID(t)
 		cleanupDevice(t, pool, id)
 		if _, err := pool.Exec(t.Context(), `INSERT INTO devices (id) VALUES ($1)`, id); err != nil {
 			t.Fatal(err)
@@ -48,14 +46,14 @@ func TestIntegrationConstraints(t *testing.T) {
 	})
 
 	t.Run("ForeignKeyRejectsOrphanReading", func(t *testing.T) {
-		id := newTestID(t) // never inserted
+		id := storetest.NewID(t) // never inserted
 		_, err := pool.Exec(t.Context(),
 			`INSERT INTO readings (device_id, temperature_c) VALUES ($1, 20.0)`, id)
 		requireSQLState(t, err, "23503") // foreign_key_violation
 	})
 
 	t.Run("DeleteCascadesReadings", func(t *testing.T) {
-		id := newTestID(t)
+		id := storetest.NewID(t)
 		cleanupDevice(t, pool, id)
 		ctx := t.Context()
 		if _, err := pool.Exec(ctx, `INSERT INTO devices (id) VALUES ($1)`, id); err != nil {
@@ -75,15 +73,6 @@ func TestIntegrationConstraints(t *testing.T) {
 			t.Fatalf("readings after delete = %d, want 0", got)
 		}
 	})
-}
-
-func newTestID(t *testing.T) string {
-	t.Helper()
-	var b [6]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		t.Fatal(err)
-	}
-	return "it-" + hex.EncodeToString(b[:])
 }
 
 // cleanupDevice deletes the device when the test ends. It uses its own

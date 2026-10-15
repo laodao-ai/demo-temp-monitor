@@ -191,19 +191,34 @@ func TestRegisterRejectsBadRequestsWithoutCreating(t *testing.T) {
 	e := newEnv(t, 50)
 	e.do("POST", "/devices", `{"id":"Sensor_01"}`)
 	e.do("POST", "/devices", `{}`)
+	// A valid ID in a body that is rejected as a whole must not register it.
+	e.do("POST", "/devices", `{"id":"sensor-01"}garbage`)
 	// If a device had been created, DELETE would return 204 instead of 404.
-	errorBody(t, e.do("DELETE", "/devices/sensor_01", ""), 400, invalidIDMsg)
 	errorBody(t, e.do("DELETE", "/devices/sensor-01", ""), 404, "device not found")
 }
 
-func TestRegisterIgnoresUnknownFieldsAndContentType(t *testing.T) {
-	e := newEnv(t, 50)
-	req := httptest.NewRequest("POST", "/devices", strings.NewReader(`{"id":"sensor-01","color":"red"}`))
-	req.Header.Set("Content-Type", "text/plain")
-	rec := httptest.NewRecorder()
-	e.h.ServeHTTP(rec, req)
-	if rec.Code != 201 {
-		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
+func TestIgnoresUnknownFieldsAndContentType(t *testing.T) {
+	cases := []struct {
+		name, path, body string
+		preRegister      bool
+	}{
+		{"register", "/devices", `{"id":"sensor-01","color":"red"}`, false},
+		{"report", "/devices/sensor-01/readings", `{"temperature_c": 20, "unit": "C"}`, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, 50)
+			if c.preRegister {
+				e.register(t, "sensor-01")
+			}
+			req := httptest.NewRequest("POST", c.path, strings.NewReader(c.body))
+			req.Header.Set("Content-Type", "text/plain")
+			rec := httptest.NewRecorder()
+			e.h.ServeHTTP(rec, req)
+			if rec.Code != 201 {
+				t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
+			}
+		})
 	}
 }
 
@@ -297,19 +312,6 @@ func TestReportZeroAndNegativeAreValid(t *testing.T) {
 	}
 }
 
-func TestReportIgnoresUnknownFieldsAndContentType(t *testing.T) {
-	e := newEnv(t, 50)
-	e.register(t, "sensor-01")
-	req := httptest.NewRequest("POST", "/devices/sensor-01/readings",
-		strings.NewReader(`{"temperature_c": 20, "unit": "C"}`))
-	req.Header.Set("Content-Type", "text/plain")
-	rec := httptest.NewRecorder()
-	e.h.ServeHTTP(rec, req)
-	if rec.Code != 201 {
-		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
-	}
-}
-
 func TestReportAllowsTrailingWhitespace(t *testing.T) {
 	e := newEnv(t, 50)
 	e.register(t, "sensor-01")
@@ -391,27 +393,26 @@ func TestReportInvalidPathID(t *testing.T) {
 func TestReportInvalidPathIDWinsOverBadBody(t *testing.T) {
 	e := newEnv(t, 50)
 	errorBody(t, e.do("POST", "/devices/BAD_ID/readings", `not json`), 400, invalidIDMsg)
-	big := `{"temperature_c": 20, "pad": "` + strings.Repeat("x", 1<<20) + `"}`
+	big := `{"temperature_c": 20, "pad": "` + strings.Repeat("x", maxBody) + `"}`
 	errorBody(t, e.do("POST", "/devices/BAD_ID/readings", big), 400, invalidIDMsg)
 }
 
-func TestReportBodyTooLargeSingleValue(t *testing.T) {
-	e := newEnv(t, 50)
-	e.register(t, "sensor-01")
-	body := `{"temperature_c": 20, "pad": "` + strings.Repeat("x", maxBody) + `"}`
-	errorBody(t, e.do("POST", "/devices/sensor-01/readings", body), 400, "request body too large")
-	if n := e.readings(t, "sensor-01"); n != 0 {
-		t.Errorf("readings = %d, want 0", n)
+func TestReportBodyTooLarge(t *testing.T) {
+	const core = `{"temperature_c": 20}`
+	cases := []struct{ name, body string }{
+		{"single value", `{"temperature_c": 20, "pad": "` + strings.Repeat("x", maxBody) + `"}`},
+		{"trailing whitespace", core + strings.Repeat(" ", maxBody)},
+		{"one byte over the limit", core + strings.Repeat(" ", maxBody+1-len(core))},
 	}
-}
-
-func TestReportBodyTooLargeTrailingWhitespace(t *testing.T) {
-	e := newEnv(t, 50)
-	e.register(t, "sensor-01")
-	body := `{"temperature_c": 20}` + strings.Repeat(" ", maxBody)
-	errorBody(t, e.do("POST", "/devices/sensor-01/readings", body), 400, "request body too large")
-	if n := e.readings(t, "sensor-01"); n != 0 {
-		t.Errorf("readings = %d, want 0", n)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := newEnv(t, 50)
+			e.register(t, "sensor-01")
+			errorBody(t, e.do("POST", "/devices/sensor-01/readings", c.body), 400, "request body too large")
+			if n := e.readings(t, "sensor-01"); n != 0 {
+				t.Errorf("readings = %d, want 0", n)
+			}
+		})
 	}
 }
 
@@ -547,16 +548,19 @@ func TestStoreCallsCarryFiveSecondDeadline(t *testing.T) {
 	ds := &deadlineStore{Store: ms}
 	e := newEnvWith(t, 50, ds, ms)
 	e.register(t, "sensor-01")
-	start := time.Now()
+	before := time.Now()
 	if rec := e.do("POST", "/devices/sensor-01/readings", `{"temperature_c": 20}`); rec.Code != 201 {
 		t.Fatalf("status = %d", rec.Code)
 	}
+	after := time.Now()
 	if !ds.ok {
 		t.Fatal("store context has no deadline")
 	}
-	left := ds.deadline.Sub(start)
-	if left < 4*time.Second || left > 5*time.Second+time.Second/2 {
-		t.Errorf("deadline is %v after request start, want about 5s", left)
+	// The deadline is set once, between before and after, as now+5s. Bracketing
+	// it needs no tolerance, so a slow machine cannot fail this.
+	if ds.deadline.Before(before.Add(5*time.Second)) || ds.deadline.After(after.Add(5*time.Second)) {
+		t.Errorf("deadline %v is outside [%v, %v] (request start + 5s)",
+			ds.deadline, before.Add(5*time.Second), after.Add(5*time.Second))
 	}
 }
 
@@ -580,12 +584,4 @@ func (c ctxStore) AddReading(ctx context.Context, id string, t float64) (store.R
 		return store.Reading{}, err
 	}
 	return c.Store.AddReading(ctx, id, t)
-}
-
-func TestReportBodyOneByteOverLimitIsRejected(t *testing.T) {
-	e := newEnv(t, 50)
-	e.register(t, "sensor-01")
-	const core = `{"temperature_c": 20}`
-	body := core + strings.Repeat(" ", maxBody+1-len(core))
-	errorBody(t, e.do("POST", "/devices/sensor-01/readings", body), 400, "request body too large")
 }

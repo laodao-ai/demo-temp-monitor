@@ -5,12 +5,11 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/laodao-ai/demo-temp-monitor/internal/redact"
 	"github.com/laodao-ai/demo-temp-monitor/internal/service"
 	"github.com/laodao-ai/demo-temp-monitor/internal/store/pgstore"
+	"github.com/laodao-ai/demo-temp-monitor/internal/store/storetest"
 	"github.com/laodao-ai/demo-temp-monitor/internal/testdb"
 )
 
@@ -36,7 +36,7 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	srv := httptest.NewServer(httpapi.NewHandler(service.New(st, thresholdC, logger), logger))
 	t.Cleanup(srv.Close)
 
-	id := newTestID(t)
+	id := storetest.NewID(t)
 	t.Cleanup(func() {
 		// Safety net in case a step failed before the deregister step.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -74,8 +74,17 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	}
 
 	// 4. The log has one alarm for this device.
-	if got := alarmLines(logBuf.String(), id); len(got) != 1 {
+	got := alarmLines(logBuf.String(), id)
+	if len(got) != 1 {
 		t.Fatalf("alarm lines for %s = %d, want 1\nlog:\n%s", id, len(got), logBuf.String())
+	}
+	// TextHandler prints float64 55.0 as 55. Match whole fields so that
+	// temperature_c=55 does not also match temperature_c=550.
+	fields := strings.Fields(got[0])
+	for _, want := range []string{"temperature_c=55", "threshold_c=50"} {
+		if !slices.Contains(fields, want) {
+			t.Errorf("alarm line lacks field %s: %s", want, got[0])
+		}
 	}
 
 	// 5. Deregister: the device's readings are gone.
@@ -90,15 +99,6 @@ func TestIntegrationEndToEnd(t *testing.T) {
 	if len(readings) != 0 {
 		t.Fatalf("readings after deregister = %d, want 0", len(readings))
 	}
-}
-
-func newTestID(t *testing.T) string {
-	t.Helper()
-	var b [6]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		t.Fatal(err)
-	}
-	return "it-" + hex.EncodeToString(b[:])
 }
 
 func send(t *testing.T, srv *httptest.Server, method, path, body string) *http.Response {
