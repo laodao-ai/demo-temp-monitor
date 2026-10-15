@@ -148,7 +148,8 @@ func (h *handler) writeServiceError(w http.ResponseWriter, r *http.Request, devi
 		writeError(w, http.StatusConflict, msgExists)
 	default:
 		// The underlying error goes to the log only, never into the response.
-		// Stores must return errors that are already free of connection details.
+		// Redaction is the injected logger's job: main wraps its handler with
+		// internal/redact (Task 3), so the raw error text is passed on here.
 		h.logger.Error("request failed",
 			"route", r.Pattern,
 			"device_id", deviceID,

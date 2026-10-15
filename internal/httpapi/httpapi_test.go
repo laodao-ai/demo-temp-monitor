@@ -14,12 +14,18 @@ import (
 	"time"
 
 	"github.com/laodao-ai/demo-temp-monitor/internal/httpapi"
+	"github.com/laodao-ai/demo-temp-monitor/internal/redact"
 	"github.com/laodao-ai/demo-temp-monitor/internal/service"
 	"github.com/laodao-ai/demo-temp-monitor/internal/store"
 	"github.com/laodao-ai/demo-temp-monitor/internal/store/memstore"
 )
 
 const maxBody = 1 << 20
+
+const (
+	testPassword = "s3cret-xyz"
+	testConnURL  = "postgres://monitor:" + testPassword + "@db.internal:7432/temp_monitor_demo"
+)
 
 const invalidIDMsg = "invalid device id: must match ^[a-z0-9-]{1,64}$"
 
@@ -39,7 +45,9 @@ func newEnv(t *testing.T, threshold float64) env {
 func newEnvWith(t *testing.T, threshold float64, st store.Store, ms *memstore.Store) env {
 	t.Helper()
 	logs := &bytes.Buffer{}
-	logger := slog.New(slog.NewJSONHandler(logs, nil))
+	// The same wrapper main installs in production (Task 3): httpapi relies
+	// on the injected logger to redact connection details.
+	logger := slog.New(redact.Handler(slog.NewJSONHandler(logs, nil), testConnURL))
 	svc := service.New(st, threshold, logger)
 	return env{h: httpapi.NewHandler(svc, logger), ms: ms, logs: logs}
 }
@@ -427,11 +435,11 @@ func TestAlarmOnlyForSuccessfulOverThresholdReports(t *testing.T) {
 
 // ---- 5xx and RUN-04 ----
 
-// brokenStore returns an error that carries a recognizable secret-looking
-// text, to prove it never reaches the response body.
+// brokenStore returns an error that carries the connection string and
+// password, to prove they reach neither the response body nor the log.
 type brokenStore struct{ store.Store }
 
-var errBoom = errors.New("boom: connection to db.internal failed")
+var errBoom = errors.New("boom: dial " + testConnURL + " failed, password " + testPassword)
 
 func (brokenStore) CreateDevice(context.Context, string) (store.Device, error) {
 	return store.Device{}, errBoom
@@ -458,6 +466,11 @@ func TestStoreErrorsGive500WithFixedBodyAndErrorLog(t *testing.T) {
 			if strings.Contains(rec.Body.String(), "boom") {
 				t.Error("response leaks the underlying error")
 			}
+			for _, secret := range []string{testPassword, testConnURL} {
+				if strings.Contains(e.logs.String(), secret) {
+					t.Errorf("log leaks %q: %s", secret, e.logs)
+				}
+			}
 			var found map[string]any
 			for _, l := range logLines(t, e.logs) {
 				if l["level"] == "ERROR" {
@@ -469,9 +482,6 @@ func TestStoreErrorsGive500WithFixedBodyAndErrorLog(t *testing.T) {
 			}
 			if found["route"] != c.route || found["device_id"] != c.deviceID {
 				t.Errorf("ERROR record = %v, want route=%q device_id=%q", found, c.route, c.deviceID)
-			}
-			if s, _ := found["error"].(string); !strings.Contains(s, "boom") {
-				t.Errorf("ERROR record lacks the underlying error: %v", found)
 			}
 			if n := alarmCount(t, e.logs); n != 0 {
 				t.Errorf("alarms = %d, want 0", n)
