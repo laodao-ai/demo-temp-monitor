@@ -257,7 +257,7 @@ Content-Type: application/json
 
 ## Risks / Trade-offs
 
-- [钉钉接口语义只核到二手资料（proposal A1）] → 成功判定对两种失败形态都不误判；tasks 末条人工真机冒烟（加签、关键词各一次）。
+- [钉钉接口语义只核到二手资料（proposal A1）] → 成功判定对两种失败形态都不误判；merge 后由人做真机冒烟（加签、关键词各一次，tasks 5.5）。冒烟之前加签实现已经进了 main，但推送默认关闭（NTF-06），出错时只有配了 webhook 的人会看到 ERROR 日志，可回退 [spec-review-amendment]。
 - [多设备同时超温撞限流] → 接受（纪要 D7）；ERROR 日志可见；冷却可调大。
 - [停机或失败漏推一条] → 接受（纪要 D5）；持续超温下个冷却期重推。
 - [`service.New` 签名变化影响 4 个调用点] → 全在仓内，同一提交里一起改。
@@ -288,11 +288,14 @@ Content-Type: application/json
 | T1 | 配置三键 + 校验 + `config.Keys` 单一源 + main/testdb 提示 + `local_env.sh` + 防漂移测试 + `example.env`/README | RUN-01、RUN-03、RUN-05 | — |
 | T2 | `redact.Handler` 变参密钥 + 全文替换 + 测试 | RUN-04 | — |
 | T3 | `notify.DingTalk`：消息体、加签、成功判定、`*url.Error` 处理，httptest 测试 | NTF-01（消息形状）、NTF-04、NTF-05 | — |
-| T4 | `notify.Throttled` + `Nop` + `service.New` 接入 + main 装配与启动日志 | NTF-01、NTF-02、NTF-03、NTF-06、NTF-07 | T1、T2、T3 |
-| T5 | 端到端用例扩展 + `openspec/config.yaml` context + `over-temperature-alarm` Purpose + 人工真机冒烟 | 全部 NTF 的端到端证据 | T4 |
+| T4a [spec-review-amendment] | `notify.Throttled`（冷却、超时字段、recover、日志字段）+ `Nop` + `service.New` 接入（tasks 4.1–4.4） | NTF-01、NTF-02、NTF-03、NTF-07 | T3 |
+| T4b [spec-review-amendment] | main 装配 + 启动日志 + 脱敏装配 + main 层测试（tasks 4.5–4.7） | NTF-02、NTF-05、NTF-06、NTF-07、RUN-04 | T1、T2、T4a |
+| T5 | 端到端用例扩展 + `openspec/config.yaml` context + `over-temperature-alarm` Purpose（tasks 5.1–5.4） | 全部 NTF 的端到端证据 | T4b |
+
+人工真机冒烟（tasks 5.5）不进出票范围，在 merge 之后由人执行（设计门 2026-10-17 拍板 Q1）[spec-review-amendment]。
 
 ```
- T1 --+
- T2 --+--> T4 --> T5
- T3 --+
+ T3 --> T4a --+
+ T1 ----------+--> T4b --> T5      merge 后: 5.5 人工真机冒烟
+ T2 ----------+
 ```

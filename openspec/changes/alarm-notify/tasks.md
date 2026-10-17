@@ -32,7 +32,7 @@
   - 正文时间等于 `RecordedAt.UTC().Format(time.RFC3339)`
   - 挂起型 handler 写成 `select { case <-r.Context().Done(): case <-release: }`，`t.Cleanup` 里先 `close(release)` 再关服务器
 
-## 4. 冷却与接入（切片 T4）
+## 4. 冷却与接入（切片 T4a：4.1–4.4；切片 T4b：4.5–4.7）[spec-review-amendment]
 
 - [ ] 4.1 `notify.Throttled`：`sync.Mutex` + `map[string]time.Time`，判断与记录在同一临界区；派发时记录、失败不回滚；放行后起 goroutine，用 `context.Background()` 派生的 5 秒 ctx 调 `Sender.Send`；成功写 INFO `alarm notification sent`、失败写 ERROR `alarm notification failed`、抑制写 DEBUG `alarm notification suppressed`；可注入时钟；`Wait()` 供测试等待在途推送〔NTF-02、NTF-03、NTF-05〕。[spec-review-amendment] 另：
   - 构造函数为 `NewThrottled(s, cooldown, logger)`，包内字段 `timeout` 缺省 5 秒
@@ -54,13 +54,13 @@
   - 挂起型假钉钉同 3.5 的写法，不能卡住 Cleanup
 - [ ] 4.7 `cmd/temp-monitor` 单元测试：存储写入出错后恢复，第一次 500 且无推送，第二次 201 且推送一次〔NTF-07〕
 
-## 5. 端到端、约定同步与真机冒烟（切片 T5）
+## 5. 端到端、约定同步与真机冒烟（切片 T5：5.1–5.4；5.5 不出票）[spec-review-amendment]
 
 - [ ] 5.1 扩展 `internal/httpapi/e2e_integration_test.go` 的 `TestIntegrationEndToEnd`：接 httptest 假钉钉，超温上报后断言假钉钉在 5 秒内收到一次请求，`text.content` 含设备 ID〔NTF-01、NTF-02〕；先等假钉钉收到请求（或 `Throttled.Wait()`）再读日志，`logBuf` 改为加锁 buffer，避免与推送 goroutine 的写入竞争 [spec-review-amendment]
 - [ ] 5.2 `openspec/config.yaml` 本项目 context：把「模块只有四个……超温告警写日志……不加表外功能」改为包含钉钉推送的说法〔C5，proposal Compliance〕
 - [ ] 5.3 `openspec/specs/over-temperature-alarm/spec.md` 的 Purpose：去掉「不做……通知」，改为指向 `alarm-notification`（Purpose 不在 delta 内，直接改主 spec）〔C5〕
 - [ ] 5.4 `scripts/test.sh all` 全绿，贴汇总行；`go vet ./...` 无输出〔全部〕
-- [ ] 5.5 人工真机冒烟（由人执行）：测试群建自定义机器人，① 安全设置选「加签」，配 webhook 与 secret 启动，触发一条超温读数，群里看到消息且 @所有人 ② 改为关键词「超温告警」、清空 secret 后重启，再触发一条，同样看到 ③ 结果（时间、两次是否成功、日志中的 `alarm notification sent`）记进 hand-off〔NTF-01、NTF-04、NTF-05，proposal A1〕
+- [ ] 5.5 人工真机冒烟（由人执行，**merge 之后**；不进出票范围，implementer 不执行、不勾选；verify 记为 deferred 并附 proposal A1 风险，hand-off 列为待人执行；冒烟失败按 A1 开 bug）[spec-review-amendment]：测试群建自定义机器人，① 安全设置选「加签」，配 webhook 与 secret 启动，触发一条超温读数，群里看到消息且 @所有人 ② 改为关键词「超温告警」、清空 secret 后重启，再触发一条，同样看到 ③ 结果（时间、两次是否成功、日志中的 `alarm notification sent`）记进 hand-off〔NTF-01、NTF-04、NTF-05，proposal A1〕
 
 ## 测试覆盖图
 
@@ -84,9 +84,10 @@
 ## 依赖顺序
 
 ```
- 1 (配置) --+
- 2 (脱敏) --+--> 4 (冷却与接入) --> 5 (端到端/约定/冒烟)
- 3 (发送方) +
+ 3 (发送方) --> 4.1–4.4 (冷却与 service 接入) --+
+ 1 (配置) ---------------------------------------+--> 4.5–4.7 (main 装配) --> 5.1–5.4 (端到端/约定)
+ 2 (脱敏) ---------------------------------------+
+                                                         merge 后: 5.5 人工真机冒烟
 ```
 
-关键路径：3 → 4 → 5（3 的加签与成功判定是 4.6、5.1、5.5 的前提）。
+关键路径：3 → 4.1–4.4 → 4.5–4.7 → 5.1–5.4（3 的加签与成功判定是 4.6、5.1、5.5 的前提）[spec-review-amendment]。
