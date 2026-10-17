@@ -1,3 +1,9 @@
+---
+ship-gate:
+  design_approved: true
+  reviewed_sha: fab05706fc0dadd94d693d8fd67c01869e750e2fc4f506b14878b1c85656a990
+  reviewed_manifest: MTAwNjQ0IGJsb2IgMzhlMDIwZTUwY2Y5MDBlZDRhMTgxZDAzNTkyODExZDc3M2MwMzEzYQlvcGVuc3BlYy9jaGFuZ2VzL2FsYXJtLW5vdGlmeS9kZXNpZ24ubWQAMTAwNjQ0IGJsb2IgNWMwYWJiYmJiMTgyNDQ3MzBmODZjMGFmZmJhZjUxZjIzZTczYzg0ZglvcGVuc3BlYy9jaGFuZ2VzL2FsYXJtLW5vdGlmeS9wcm9wb3NhbC5tZAAxMDA2NDQgYmxvYiBmZDlkMjBhMjVmNzMyZGE4NTdkZmY0OGMxZTM0YTVhYjFiMTQyNjk3CW9wZW5zcGVjL2NoYW5nZXMvYWxhcm0tbm90aWZ5L3NwZWNzL2FsYXJtLW5vdGlmaWNhdGlvbi9zcGVjLm1kADEwMDY0NCBibG9iIDhiNTg2NzY5ZDMyNjE1Njg5OTQxYTRmNWFjNTQ0MWI5YzYyMzA1ZmIJb3BlbnNwZWMvY2hhbmdlcy9hbGFybS1ub3RpZnkvc3BlY3Mvc2VydmljZS1ydW50aW1lL3NwZWMubWQ=
+---
 # spec-review-report · alarm-notify
 
 - 评审对象：`openspec/changes/alarm-notify/` 四件套（proposal / design / specs ×2 / tasks），拍板决策单一源 `decision-memo.md`
