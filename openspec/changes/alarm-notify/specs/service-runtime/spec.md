@@ -4,7 +4,7 @@
 
 ### Requirement: RUN-01 配置来源与优先级
 
-服务 SHALL 读取四个配置项：`TM_DATABASE_URL`、`TM_LISTEN_ADDR`、`TM_ALARM_THRESHOLD_C`、`TM_ALARM_WEBHOOK_URL`。`TM_ALARM_WEBHOOK_URL` 没有缺省值，未配置即不发通知。每一项的取值来源按优先级依次为：环境变量；当前工作目录下的 `config/local.env`；缺省值。
+服务 SHALL 读取四个配置项：`TM_DATABASE_URL`、`TM_LISTEN_ADDR`、`TM_ALARM_THRESHOLD_C`、`TM_ALARM_WEBHOOK_URL`。`TM_ALARM_WEBHOOK_URL` 没有缺省值，未配置即不发告警通知。每一项的取值来源按优先级依次为：环境变量；当前工作目录下的 `config/local.env`；缺省值。
 
 `config/local.env` 的文法如下，服务与 `scripts/` 下的脚本 MUST 使用同一套文法：[spec-review-amendment]
 
@@ -128,15 +128,15 @@
 - **WHEN** 处理上报时存储返回错误
 - **THEN** 响应状态码为 500，响应体为 `{"error": "internal error"}`
 
-#### Scenario: 通知发送失败的日志
+#### Scenario: 告警通知发送失败的日志
 
 - **WHEN** `TM_ALARM_WEBHOOK_URL=http://127.0.0.1:9/hook/tok-s3cret?key=k3y-xyz`，该端口无人监听，设备上报一条触发 `alarm` 的读数
-- **THEN** 日志中有一条通知发送失败的 ERROR
+- **THEN** 日志中有一条告警通知发送失败的 ERROR
 - **AND** stderr 全文不含 `tok-s3cret`、`k3y-xyz`
 
-#### Scenario: 接收端返回错误的日志
+#### Scenario: 接收方返回错误的日志
 
-- **WHEN** `TM_ALARM_WEBHOOK_URL` 的路径含 `tok-s3cret`，接收端返回 403，响应体含 `tok-s3cret`
+- **WHEN** `TM_ALARM_WEBHOOK_URL` 的路径含 `tok-s3cret`，接收方返回 403，响应体含 `tok-s3cret`
 - **THEN** 日志中的 ERROR 只含状态码 403
 - **AND** stderr 全文不含 `tok-s3cret`
 
@@ -147,20 +147,20 @@
 - `Shutdown` 超过 5 秒时，服务 SHALL 记一条 WARN，仍关闭连接池，并以退出码 0 结束。[spec-review-amendment]
 - main MUST 等 `Shutdown` 返回后才退出。[spec-review-amendment]
 - 运行中 `Serve` 返回非预期错误时，服务 SHALL 以退出码 1 结束。[spec-review-amendment]
-- 启用告警通知时，服务 SHALL 在 HTTP 请求处理完之后、同一个 5 秒时限内，继续发送已排队的通知。时限到时仍未发出的通知 SHALL 丢弃，并写一条 WARN，含丢弃条数。处理通知 MUST NOT 让退出超过 5 秒。
+- 启用告警通知时，服务 SHALL 在 HTTP 请求处理完之后、同一个 5 秒时限内，继续发送已排队的告警通知。时限到时仍未发出的告警通知 SHALL 丢弃，并写一条 WARN，含丢弃条数。处理告警通知 MUST NOT 让退出超过 5 秒。
 
 #### Scenario: Ctrl-C 退出
 
 - **WHEN** 服务空闲运行中，向进程发送 SIGINT
 - **THEN** 进程在 5 秒内以退出码 0 结束
 
-#### Scenario: 退出时接收端卡住
+#### Scenario: 退出时接收方卡住
 
-- **WHEN** 启用告警通知，接收端收到请求后不再响应，队列中还有 3 条通知未发出，向进程发送 SIGINT
+- **WHEN** 启用告警通知，接收方收到请求后不再响应，队列中还有 3 条告警通知未发出，向进程发送 SIGINT
 - **THEN** 进程在 5 秒内以退出码 0 结束
-- **AND** 日志中有一条 WARN，写明丢弃的通知条数
+- **AND** 日志中有一条 WARN，写明丢弃的告警通知条数
 
 #### Scenario: 退出时队列可发完
 
-- **WHEN** 启用告警通知，接收端立即返回 200，队列中有 2 条通知未发出，向进程发送 SIGINT
-- **THEN** 接收端收到这 2 条通知，进程以退出码 0 结束，日志中没有丢弃通知的 WARN
+- **WHEN** 启用告警通知，接收方立即返回 200，队列中有 2 条告警通知未发出，向进程发送 SIGINT
+- **THEN** 接收方收到这 2 条告警通知，进程以退出码 0 结束，日志中没有丢弃告警通知的 WARN

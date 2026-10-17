@@ -1,7 +1,7 @@
 # over-temperature-alarm Specification
 
 ## Purpose
-规定读数超过全局告警阈值时系统如何告警：只写一条结构化 WARN 日志，不做去重、通知或按设备阈值。
+规定超温读数如何写告警日志：每条成功入库的超温读数写一条结构化 WARN 日志，不去重，不按设备设阈值。设备告警状态与告警通知见 `alarm-notification`。
 
 ## Requirements
 

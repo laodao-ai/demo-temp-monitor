@@ -2,6 +2,8 @@
 
 本文件是当前仓库 OpenSpec 资产索引。
 
+术语表：[GLOSSARY.md](../GLOSSARY.md)（规格、设计、代码注释中的领域用语以它为准）。
+
 ## 按主题分组（specs/）
 
 ### 温度监控服务（temp-monitor-baseline 引入）
