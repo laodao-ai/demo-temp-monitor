@@ -68,14 +68,14 @@ hit:[TG-08,TG-16,TG-17,TG-26]｜依据模型判定:[TG-01,TG-05,TG-08,TG-10,TG-1
   │ Q-scope 范围划界认不认？                                              │
   │   自答：锚 proposal Non-Goals（值班表/多渠道/恢复通知/保证送达/全局限速 │
   │   五条均附可证伪假设）+ design Non-Goals 4 条；本轮 amendment 未扩范围，│
-  │   只补实现约束与测试。README 正文同步（新 1.8）是目标态必需，非加宽。    │  [ ] 认  [ ] 不认
+  │   只补实现约束与测试。README 正文同步（新 1.8）是目标态必需，非加宽。    │  [x] 认  [ ] 不认
   │ Q-deps  依赖/顺序认不认？                                             │
   │   自答：锚 design「切片建议」T1/T2/T3 → T4 → T5 与 tasks「依赖顺序」；   │
-  │   5.5 真机冒烟的落位未定（见 Q1），T4 是否拆分见 Q2。                    │  [ ] 认  [ ] 不认
+  │   5.5 真机冒烟的落位未定（见 Q1），T4 是否拆分见 Q2。                    │  [x] 认  [ ] 不认
   │ Q-risk  风险赌注与对策认不认？                                         │
   │   自答：锚 sdflow:hr-tg hit=TG-08,16,17,26；最大风险是推送失败原因被     │
   │   withheld（6 镜独立命中，D-A1 已修）、缺 errcode 误判成功（D-A2 已修）、 │
-  │   钉钉语义仅二手资料（A1，靠 5.5 真机冒烟兜底，落位见 Q1）。             │  [ ] 认  [ ] 不认
+  │   钉钉语义仅二手资料（A1，靠 5.5 真机冒烟兜底，落位见 Q1）。             │  [x] 认  [ ] 不认
   └───────────────────────────────────────────────────────────────────┘
 ```
 <!-- sdflow:gate-questions v1 q="scope,deps,risk" -->
@@ -175,7 +175,24 @@ hit:[TG-08,TG-16,TG-17,TG-26]｜依据模型判定:[TG-01,TG-05,TG-08,TG-10,TG-1
 - `proposal.md`：无改动。
 - `openspec validate alarm-notify --strict` 通过。
 
-## 八、收敛口
+## 八、设计门拍板记录
+
+- **2026-10-17 设计门已拍板批准**：人回复「都同意推荐，批准」。
+  - 拍板三问：均为「认」。
+  - Q1：选 A（5.5 移到 merge 后由人执行，verify 记 deferred）。
+  - Q2：拆分 T4，T4a 为 4.1–4.4，T4b 为 4.5–4.7。
+  - T1：维持现状，不清理冷却表。
+  - 全部 [自动决策] 维持采纳，[已裁掉] 维持。
+- **拍板前二次修订**：提交 `2879ff4`（checkpoint spec-review-amendment），内容是 5.5 的落位与切片调整。
+- **窄复核**：1 个 fresh 子代理（medium），审增量 `fd14628..2879ff4`，即主 session 写回的 amendment 加上二次修订。
+  - 结论：无阻塞项，4 条 medium/low，主 session 已全部修正（标 `[spec-review-amendment]`）。
+  - N1：5.5 第 ③ 步原写「记进 hand-off」，与 merge 后执行矛盾（那时 hand-off 已归档）。改为用 `/sdflow-issues` 记录；decision-memo D8 注明 Q1 修订。
+  - N2：缺 errcode 时没有对应的 error 文本。新增第五种 `dingtalk response has no integer errcode`，3.5 断言该文本。
+  - N3：查询串非法这一分支的提示文案会误导，也没有测试。提示改为 `… with a valid query string`，RUN-03 场景与 1.3 增 `;` 用例。
+  - N4：T4a 的覆盖列补 NTF-05；4.2 写明 panic 场景由哪两条用例证明；1.8 的 README 引文改正，并补上第 9 行。
+  - 诚实边界：N1–N4 的修正**没有再做第二轮独立复核**。它们都是窄复核本身给出的一致性修补，没有引入新的设计决策（通则④，不再循环）。
+
+## 九、收敛口
 
 建议进入**设计 HARD-GATE**：人过本报告，勾选拍板三问，并对 Q1（推荐 A）、Q2（推荐拆 T4）、T1（推荐维持）给出拍板。
 - 批准后执行 `/sdflow-ship`。

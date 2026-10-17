@@ -137,10 +137,11 @@
 8. **成功判定**：`resp.StatusCode` 在 200–299 且响应体（最多读 64 KiB）解析为 `{"errcode": int, "errmsg": string}` 且 `errcode == 0`。其余全部算失败，error 文本含 HTTP 状态码或 `errcode`/`errmsg`。[spec-review-amendment] 具体做法：
    - 解码目标的 `errcode` 字段类型为 `*int`。字段缺失（`{}`、`null`、`{"status":"ok"}`）或类型不对（`"0"`）一律判失败，不当作 0。
    - 拿到 `resp` 后立即 `defer resp.Body.Close()`。读取用 `io.LimitReader(resp.Body, 64<<10)`；超过上限导致 JSON 截断时按「响应体不是 JSON」判失败。
-   - error 文本固定为以下四种，均不含 URL：
+   - error 文本固定为以下五种，均不含 URL：
      - `dingtalk http <状态码>`
      - `dingtalk errcode <n>: <errmsg>; check that TM_DINGTALK_SECRET matches the robot's signing setting, or that its keyword is 超温告警`
      - `dingtalk response is not valid JSON`
+     - `dingtalk response has no integer errcode`（合法 JSON 但缺 `errcode` 或类型不对）[spec-review-amendment]
      - `dingtalk request: <*url.Error 的 .Err>; check outbound access or HTTPS_PROXY`
 9. **不打 `*url.Error` 全文**：`http.Client.Do` 返回的 `*url.Error` 的 `Error()` 含完整请求 URL（含 `access_token` 与 `sign`）。`DingTalk.Send` 用 `errors.As` 取出 `*url.Error` 后只包装其 `.Err`，再由脱敏 handler 兜底（见 Security 节）。
 10. **HTTP 客户端**：`&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}`，使用 `http.DefaultTransport`（读 `HTTPS_PROXY`），超时由 ctx 控制。不跟随重定向，3xx 按非 2xx 判失败。这样请求体不会被转发到 `Location` 指向的其它主机，POST 也不会被改成 GET [spec-review-amendment]。
@@ -288,7 +289,7 @@ Content-Type: application/json
 | T1 | 配置三键 + 校验 + `config.Keys` 单一源 + main/testdb 提示 + `local_env.sh` + 防漂移测试 + `example.env`/README | RUN-01、RUN-03、RUN-05 | — |
 | T2 | `redact.Handler` 变参密钥 + 全文替换 + 测试 | RUN-04 | — |
 | T3 | `notify.DingTalk`：消息体、加签、成功判定、`*url.Error` 处理，httptest 测试 | NTF-01（消息形状）、NTF-04、NTF-05 | — |
-| T4a [spec-review-amendment] | `notify.Throttled`（冷却、超时字段、recover、日志字段）+ `Nop` + `service.New` 接入（tasks 4.1–4.4） | NTF-01、NTF-02、NTF-03、NTF-07 | T3 |
+| T4a [spec-review-amendment] | `notify.Throttled`（冷却、超时字段、recover、日志字段）+ `Nop` + `service.New` 接入（tasks 4.1–4.4） | NTF-01、NTF-02、NTF-03、NTF-05、NTF-07 | T3 |
 | T4b [spec-review-amendment] | main 装配 + 启动日志 + 脱敏装配 + main 层测试（tasks 4.5–4.7） | NTF-02、NTF-05、NTF-06、NTF-07、RUN-04 | T1、T2、T4a |
 | T5 | 端到端用例扩展 + `openspec/config.yaml` context + `over-temperature-alarm` Purpose（tasks 5.1–5.4） | 全部 NTF 的端到端证据 | T4b |
 

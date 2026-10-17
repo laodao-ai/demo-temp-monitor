@@ -2,12 +2,12 @@
 
 - [ ] 1.1 `internal/config`：新增常量 `KeyDingTalkWebhook`、`KeyDingTalkSecret`、`KeyNotifyCooldown`，导出有序列表 `Keys`（六个键），`knownKeys` 由 `Keys` 派生；`Config` 新增 `DingTalkWebhook`、`DingTalkSecret`、`NotifyCooldown`（缺省 10 分钟）；`config.go:1`、`:35` 两处包与类型注释中的「three」改为不写数量的说法 [spec-review-amendment]〔RUN-01、NTF-03〕
 - [ ] 1.2 `internal/config`：新增哨兵错误与校验，检查顺序固定为 webhook → 冷却 → 只配 secret [spec-review-amendment]——webhook 须为带主机的 http/https 绝对 URL 且 `url.ParseQuery(u.RawQuery)` 不报错 [spec-review-amendment]；冷却须能被 `time.ParseDuration` 解析且大于 0；配了 secret 必须配 webhook；错误消息只含键名〔RUN-03〕
-- [ ] 1.3 `internal/config` 单元测试：新键的优先级与空值、缺省冷却 10 分钟、`TM_NOTIFY_COOLDOWN=90s`、三类非法值（含 `ftp://`、相对路径、`0`、`-1m`、`ten`、只配 secret）且错误文本不含配置值〔RUN-01、RUN-03〕
+- [ ] 1.3 `internal/config` 单元测试：新键的优先级与空值、缺省冷却 10 分钟、`TM_NOTIFY_COOLDOWN=90s`、三类非法值（含 `ftp://`、相对路径、查询串含 `;` 的 webhook [spec-review-amendment]、`0`、`-1m`、`ten`、只配 secret）且错误文本不含配置值〔RUN-01、RUN-03〕
 - [ ] 1.4 `cmd/temp-monitor` 的 `configHint` 与 `internal/testdb` 的 `configFailure`：allowed keys 改由 `config.Keys` 拼出；三个新错误各配提示，整行文案与 RUN-03 场景逐字一致；同步改 `main_test.go`、`testdb_test.go` 中的期望文案〔RUN-01、RUN-03〕
 - [ ] 1.5 `scripts/lib/local_env.sh`：`case` 与 unknown key 提示加入三个新键〔RUN-01〕
 - [ ] 1.6 新增 Go 单元测试：用 bash 调 `scripts/lib/local_env.sh` 的 `local_env_get`，① 含三个新键的 local.env 不报错且读出的 `TM_DATABASE_URL` 不变 ② `FOO=bar` 时 stderr 的 allowed keys 与 `strings.Join(config.Keys, ", ")` 相同〔RUN-01〕
 - [ ] 1.7 `config/example.env`：加 `TM_DINGTALK_WEBHOOK=`、`TM_DINGTALK_SECRET=`（留空，各一行注释）与 `TM_NOTIFY_COOLDOWN=10m`；加单元测试读取 `config/example.env` 断言两推送键为空、冷却为 `10m`，且以它为 local.env（补连接串）加载后 webhook 为空；README 配置表改为六项并说明推送〔RUN-05、RUN-01〕
-- [ ] 1.8 README 其余同步 [spec-review-amendment]：改写 `README.md:3`（「只写告警日志」）、`:13`、`:14`、`:35`（「三个配置项」）；新增「钉钉推送」小节，必含：① 建群自定义机器人的步骤 ② 两种安全设置及对应配置（加签填 `TM_DINGTALK_SECRET`；关键词必须逐字为 `超温告警`）③ 需要出网或 `HTTPS_PROXY` ④ 用启动日志 `notify enabled … signed=` 自检 ⑤ 配了真实 webhook 后 `scripts/simulate.sh` 会向该群推送并 @所有人，演练请用测试群机器人，用完删掉 ⑥ 关闭推送须从环境变量与 `config/local.env` 两处都删掉 webhook；配置表写明冷却格式示例 `10m`、`90s`〔RUN-01、RUN-05、NTF-06〕
+- [ ] 1.8 README 其余同步 [spec-review-amendment]：改写 `README.md:3`（「温度超过阈值时写一条告警日志」）、`:9`（「项目只做四块」）、`:13`、`:14`、`:35`（「三个配置项」）；新增「钉钉推送」小节，必含：① 建群自定义机器人的步骤 ② 两种安全设置及对应配置（加签填 `TM_DINGTALK_SECRET`；关键词必须逐字为 `超温告警`）③ 需要出网或 `HTTPS_PROXY` ④ 用启动日志 `notify enabled … signed=` 自检 ⑤ 配了真实 webhook 后 `scripts/simulate.sh` 会向该群推送并 @所有人，演练请用测试群机器人，用完删掉 ⑥ 关闭推送须从环境变量与 `config/local.env` 两处都删掉 webhook；配置表写明冷却格式示例 `10m`、`90s`〔RUN-01、RUN-05、NTF-06〕
 
 ## 2. 脱敏：推送密钥（切片 T2）
 
@@ -23,10 +23,10 @@
   - `errcode` 解码为 `*int`，缺失按失败处理
   - `defer resp.Body.Close()`，读取用 `io.LimitReader`
   - `CheckRedirect` 返回 `http.ErrUseLastResponse`
-  - error 文本按第 8 条的四种固定格式（含修法提示）
+  - error 文本按第 8 条的五种固定格式（含修法提示）
   - 构造函数为 `NewDingTalk(webhook, secret, cooldown)`
 - [ ] 3.5 `notify` 单元测试（httptest）：请求体字段；加签测试向量（secret `SECtest0000000000000000000000000000000000000000000000000000000000`、ts `1700000000000` ⇒ `szPcgtoCabDjIT69N8i2Omun8ktW8akfg42aQqadSCU=`）；不加签时只有 `access_token`；200+errcode 0 成功；200+errcode 1、502、非 JSON、端口无人监听、挂起超时均返回 error；返回的 error 文本不含 `access_token` 值〔NTF-01、NTF-04、NTF-05、RUN-04〕。[spec-review-amendment] 另加：
-  - 200 + `{}`、200 + `{"errcode":"0"}` 判失败
+  - 200 + `{}`、200 + `{"errcode":"0"}` 判失败，error 为 `dingtalk response has no integer errcode`
   - 302 判失败，`Location` 目标未收到请求
   - errcode 失败的 error 含修法提示
   - 正文时间等于 `RecordedAt.UTC().Format(time.RFC3339)`
@@ -42,7 +42,7 @@
   - 边界：`last+cooldown` 放行，`last+cooldown-1ns` 抑制
   - 冷却 90s 用注入时钟测
   - `timeout` 改为 50ms、Sender 阻塞到 ctx 结束时，写出 ERROR 且 `Wait()` 返回
-  - 假 Sender panic 后写出 ERROR，后续 `Notify` 仍正常
+  - 假 Sender panic 后写出 ERROR，后续 `Notify` 仍正常（NTF-02「推送中 panic 不影响服务」由本用例 + 4.4「Notify 不阻塞、上报照常返回」共同证明，main 层不注入 panic Sender）
   - 断言 `suppressed` 时用 Debug 级 handler
   - 日志写进加锁 buffer（同 `main_test.go` 的 `lockedBuffer`）
 - [ ] 4.3 `service.New` 加参数 `n notify.Notifier`；`Report` 在写 WARN 后调用 `Notify(Alarm{...RecordedAt: r.RecordedAt})`；更新 `service.go` 注释；改 4 个调用点（main、`httpapi_test.go`、`e2e_integration_test.go`、`service_test.go`）〔NTF-01、NTF-07〕
@@ -60,7 +60,7 @@
 - [ ] 5.2 `openspec/config.yaml` 本项目 context：把「模块只有四个……超温告警写日志……不加表外功能」改为包含钉钉推送的说法〔C5，proposal Compliance〕
 - [ ] 5.3 `openspec/specs/over-temperature-alarm/spec.md` 的 Purpose：去掉「不做……通知」，改为指向 `alarm-notification`（Purpose 不在 delta 内，直接改主 spec）〔C5〕
 - [ ] 5.4 `scripts/test.sh all` 全绿，贴汇总行；`go vet ./...` 无输出〔全部〕
-- [ ] 5.5 人工真机冒烟（由人执行，**merge 之后**；不进出票范围，implementer 不执行、不勾选；verify 记为 deferred 并附 proposal A1 风险，hand-off 列为待人执行；冒烟失败按 A1 开 bug）[spec-review-amendment]：测试群建自定义机器人，① 安全设置选「加签」，配 webhook 与 secret 启动，触发一条超温读数，群里看到消息且 @所有人 ② 改为关键词「超温告警」、清空 secret 后重启，再触发一条，同样看到 ③ 结果（时间、两次是否成功、日志中的 `alarm notification sent`）记进 hand-off〔NTF-01、NTF-04、NTF-05，proposal A1〕
+- [ ] 5.5 人工真机冒烟（由人执行，**merge 之后**；不进出票范围，implementer 不执行、不勾选；verify 记为 deferred 并附 proposal A1 风险，hand-off 列为待人执行；冒烟失败按 A1 开 bug）[spec-review-amendment]：测试群建自定义机器人，① 安全设置选「加签」，配 webhook 与 secret 启动，触发一条超温读数，群里看到消息且 @所有人 ② 改为关键词「超温告警」、清空 secret 后重启，再触发一条，同样看到 ③ 结果（时间、两次是否成功、日志中的 `alarm notification sent`）用 `/sdflow-issues` 记一条 todo 并关闭；失败则按 A1 开 bug（merge 后 hand-off 已归档，不回写）[spec-review-amendment]〔NTF-01、NTF-04、NTF-05，proposal A1〕
 
 ## 测试覆盖图
 

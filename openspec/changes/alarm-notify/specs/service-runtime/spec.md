@@ -93,8 +93,8 @@
 
 #### Scenario: webhook 非法
 
-- **WHEN** `TM_DATABASE_URL` 已配置 [spec-review-amendment]，分别设置 `TM_DINGTALK_WEBHOOK` 为 `not a url tok-123`、`ftp://example.invalid/robot/send?access_token=tok-123`、`/robot/send?access_token=tok-123`，启动服务
-- **THEN** 每次进程退出码都为 1，stderr 为一行 `TM_DINGTALK_WEBHOOK is invalid; must be an absolute http or https URL`
+- **WHEN** `TM_DATABASE_URL` 已配置 [spec-review-amendment]，分别设置 `TM_DINGTALK_WEBHOOK` 为 `not a url tok-123`、`ftp://example.invalid/robot/send?access_token=tok-123`、`/robot/send?access_token=tok-123`、`https://example.invalid/robot/send?access_token=tok-123;x` [spec-review-amendment]，启动服务
+- **THEN** 每次进程退出码都为 1，stderr 为一行 `TM_DINGTALK_WEBHOOK is invalid; must be an absolute http or https URL with a valid query string` [spec-review-amendment]
 - **AND** stderr 不含 `tok-123`
 
 #### Scenario: http 的 webhook 可用于本机假服务器
