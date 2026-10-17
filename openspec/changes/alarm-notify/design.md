@@ -2,7 +2,7 @@
 
 ## Context
 
-动机见 proposal.md「Why」，行为契约见 `specs/on-call-notify/spec.md` 和 `specs/service-runtime/spec.md`。下面只列影响做法的现状：
+动机见 proposal.md「Why」，行为契约见 `specs/alarm-notify/spec.md` 和 `specs/service-runtime/spec.md`，术语见仓根 `GLOSSARY.md`。下面只列影响做法的现状：
 
 - `internal/service.Service` 构造后没有可变状态。`Report` 先调用 `store.AddReading`，成功后才判断阈值、写 WARN（`internal/service/service.go`）。
 - `service.New(s, thresholdC, logger)` 有四个调用点：`cmd/temp-monitor/main.go`、`internal/httpapi/httpapi_test.go`、`internal/service/service_test.go`、`internal/httpapi/e2e_integration_test.go`。
@@ -75,8 +75,10 @@
 
 ### D1 新包 `internal/notify`，service 只依赖接口
 
-- `notify.Kind`：取值 `alarm` 和 `resolved`。
-- `notify.Event`：`Kind`、`DeviceID`、`TemperatureC`、`ThresholdC`、`HysteresisC`、`At`。`At` 取 `store.Reading.RecordedAt`。
+- `notify.Kind`：取值 `triggered` 和 `resolved`。不用 `alarm`，因为 GLOSSARY 里"告警"只指告警日志。
+- `notify.Event`：`Kind`、`DeviceID`、`TemperatureC`、`ThresholdC`、`HysteresisC`、`At`、`Since`。
+  - `At` 取 `store.Reading.RecordedAt`。
+  - `Since` 只在 resolved 上有值，JSON 里用 `omitempty`，triggered 不输出这个字段。
 - `notify.Notifier`：只有一个方法 `Notify(Event)`，约定不阻塞、不返回错误。
 - `notify.Webhook` 实现这个接口，另外提供 `Close(ctx)`。
 
@@ -90,15 +92,17 @@
 - 备选一：新增构造函数 `NewWithNotifier`。会出现两条构造路径，以后再加选项就要继续加函数。
 - 备选二：直接加两个位置参数。要改四个调用点，没有收益。
 
-### D3 状态是 `map[string]bool` 加一把 `sync.Mutex`，入队在锁内
+### D3 未结束的超温事件存在 `map[string]time.Time` 里，加一把 `sync.Mutex`，入队在锁内
 
-`Service` 新增 `mu sync.Mutex` 和 `over map[string]bool`。`Report` 在 `AddReading` 成功后加锁，然后：
+`Service` 新增 `mu sync.Mutex` 和 `open map[string]time.Time`。键是设备 ID，值是该事件 triggered 的 `at`，用来给 resolved 填 `since`（NTF-09）。`Report` 在 `AddReading` 成功后加锁，然后：
 
-- `!over[id] && t > T`：置为 true，调用 `Notify(alarm)`。
-- `over[id] && t <= T-H`：删除该键，调用 `Notify(resolved)`。
+- 没有该键，且 `t > T`：存入 `r.RecordedAt`，调用 `Notify(triggered)`。
+- 有该键，且 `t <= T-H`：取出值作为 `Since`，删除该键，调用 `Notify(resolved)`。
 - 其它情况：不做任何事。
 
 `Register` 和 `Deregister` 成功后加锁，删除该键（NTF-07）。
+
+notifier 不回调 service。投递失败时事件保持原样，这正是 NTF-11 写明的已知限制。由此依赖保持单向：service 依赖 notify，notify 不依赖 service。
 
 入队发生在锁内，所以队列里的顺序就是状态转换的顺序（NTF-10）。同一设备的并发超温只有第一个拿到锁的请求会触发转换（NTF-08）。`Notify` 是非阻塞的 channel 发送，持锁时间只有几次 map 操作加一次 select。
 
@@ -123,6 +127,7 @@
 ### D5 HTTP 客户端的细节
 
 - `http.Client` 设 `CheckRedirect: func(...) error { return http.ErrUseLastResponse }`，所以 3xx 原样返回，按失败处理（NTF-11）。
+- 成败只看 `resp.StatusCode` 是否在 200..299 之间，不解析响应体（NTF-11）。
 - 请求体用 `encoding/json` 编码 Event，字段名按 NTF-09。`at` 用 `time.RFC3339Nano`，与 httpapi 的 `recorded_at` 格式一致。
 - 响应体用 `io.Copy(io.Discard, io.LimitReader(body, 64<<10))` 读完再关闭，便于连接复用，也不会被超大响应拖住。
 
@@ -147,7 +152,10 @@
 - 新增哨兵错误 `ErrHysteresisInvalid` 和 `ErrWebhookInvalid`，main 的 `configHint` 为它们各配一条提示。`ErrUnknownKey` 的提示列出全部五个键。
 - 校验：
   - 回差：`ParseFloat` 成功，且不是 NaN、不是 Inf，且 `>= 0`。
-  - URL：`url.Parse` 成功，scheme 为 `http` 或 `https`，`Host` 非空。
+  - URL：`url.Parse` 成功且 `Host` 非空，并且满足下列之一：
+    - scheme 为 `https`；
+    - scheme 为 `http`，且 `u.Hostname()` 是回环地址：`net.ParseIP` 解析后 `IsLoopback()` 为真，或者主机名字面等于 `localhost`。不做 DNS 解析，所以结果不依赖本机的 hosts 配置。
+  - 非回环地址用了 http 时，返回同一个 `ErrWebhookInvalid`，由 `configHint` 提示"非回环地址须用 https"。
 - `scripts/lib/local_env.sh` 的 `case` 分支和报错文案同步列出五个键。
 
 ### D8 main 组装
@@ -165,10 +173,12 @@
 
 ## Risks / Trade-offs
 
-- [服务重启丢状态：可能重复发 alarm，也可能漏发 resolved] → 作为 NTF-13 写进 spec，README 里说明。可靠投递留给以后的 outbox change。
+- [服务重启丢状态：可能重复发 triggered，也可能漏发 resolved] → 作为 NTF-13 写进 spec，README 里说明。可靠投递留给以后的 outbox change。
+- [triggered 投递失败后，接收方在 resolved 到达之前看不到这个事件] → 已在 NTF-11 写明，是已知限制；README 的已知限制表里也列出。若要补救，只能靠 outbox，不在 notifier 和 service 之间加回调。
+- [接收端返回 200，却在响应体里报错] → 本服务视为成功（NTF-11）。README 提醒：接收端要让状态码反映真实结果，否则自己加一层转换。
 - [webhook 长时间不可用时通知全部丢失，只剩 WARN] → 日志告警（ALM-01）不受影响，仍是完整记录。不重试是有意为之，见 proposal「What Changes」的投递一条。
 - [以后有人直接 `logger.Warn(..., "error", err)` 记录 `*url.Error`，URL 就会泄露] → `notify` 包内只有一处记录发送错误，在那里加注释说明原因。RUN-04 的两个场景测试断言 stderr 不含 token，回归时会失败。
-- [注销与上报竞争：上报的入库发生在注销之前，状态评估却发生在注销之后，会给已删除的设备留下一个 `over` 标记] → 重新注册时（NTF-07）会清掉。剩下的窗口要求「入库、注销、重新注册、评估」恰好按这个顺序交错，影响只是可能多发一条 alarm，接受。
+- [注销与上报竞争：上报的入库发生在注销之前，状态评估却发生在注销之后，会给已删除的设备留下一个未结束的事件] → 重新注册时（NTF-07）会清掉。剩下的窗口要求「入库、注销、重新注册、评估」恰好按这个顺序交错，影响只是可能多发一条 triggered，接受。
 - [并发上报时，状态评估顺序可能与入库提交顺序不同] → 状态以评估顺序为准，spec 不承诺与 `recorded_at` 顺序一致，接受。
 - [全局锁] → 临界区里没有 I/O，在示例的负载下可以忽略。
 - [队满时每丢一条写一条 WARN，可能刷日志] → 事件已经去重，只有状态转换才产生事件，量级受设备数和抖动频率限制，接受。

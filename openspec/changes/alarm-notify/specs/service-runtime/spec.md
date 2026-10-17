@@ -60,7 +60,7 @@
 - `TM_DATABASE_URL` 未配置；
 - `TM_ALARM_THRESHOLD_C` 不是有限数，`NaN`、`Inf`、`-Inf` 都视为非法；[spec-review-amendment]
 - `TM_NOTIFY_HYSTERESIS_C` 已配置，但不是大于或等于 0 的有限数；
-- `TM_NOTIFY_WEBHOOK_URL` 已配置，但不是 scheme 为 `http` 或 `https`、且带主机的绝对 URL。报错只指出键名，MUST NOT 回显值；
+- `TM_NOTIFY_WEBHOOK_URL` 已配置，但不合法。合法的 URL 是带主机的绝对 URL，并且满足下列之一：scheme 为 `https`；或者 scheme 为 `http`，且主机是回环地址（IP 在 `127.0.0.0/8` 内，或为 `::1`，或主机名字面为 `localhost`）。报错只指出键名，MUST NOT 回显值；
 - `config/local.env` 有不符合 RUN-01 文法的行；[spec-review-amendment]
 - 5 秒内连不上数据库；
 - 数据库中缺少 `devices` 或 `readings` 表；
@@ -98,6 +98,17 @@
 - **WHEN** `TM_NOTIFY_WEBHOOK_URL` 依次为 `not a url tok-s3cret`、`ftp://127.0.0.1/tok-s3cret`、`/tok-s3cret`，分别启动服务
 - **THEN** 每次进程退出码都为 1，stderr 指出 `TM_NOTIFY_WEBHOOK_URL` 非法
 - **AND** stderr 不含 `tok-s3cret`
+
+#### Scenario: 非回环主机使用 http
+
+- **WHEN** `TM_NOTIFY_WEBHOOK_URL=http://notify.example.com/hook/tok-s3cret`，启动服务
+- **THEN** 进程退出码为 1，stderr 指出 `TM_NOTIFY_WEBHOOK_URL` 非法，并提示非回环地址须用 https
+- **AND** stderr 不含 `tok-s3cret`
+
+#### Scenario: https 与回环 http 合法
+
+- **WHEN** `TM_NOTIFY_WEBHOOK_URL` 依次为 `https://notify.example.com/hook`、`http://127.0.0.1:9090/notify`、`http://[::1]:9090/notify`、`http://localhost:9090/notify`
+- **THEN** 每次配置校验都通过
 
 #### Scenario: webhook 不可达时照常启动
 
@@ -145,13 +156,13 @@
 
 #### Scenario: webhook 投递失败的日志
 
-- **WHEN** `TM_NOTIFY_WEBHOOK_URL=http://u-s3cret:p-s3cret@127.0.0.1:<无人监听的端口>/hook/tok-s3cret?key=k3y-s3cret`，服务运行中某设备进入超温
+- **WHEN** `TM_NOTIFY_WEBHOOK_URL=http://u-s3cret:p-s3cret@127.0.0.1:<无人监听的端口>/hook/tok-s3cret?key=k3y-s3cret`，服务运行中某设备开始一个超温事件
 - **THEN** 日志新增一条 WARN `notification failed`
 - **AND** 服务 stderr 全文不含 `u-s3cret`、`p-s3cret`、`tok-s3cret`、`k3y-s3cret`
 
 #### Scenario: webhook 返回非 2xx 的日志
 
-- **WHEN** webhook URL 的路径含 `tok-s3cret`，webhook 返回 403，某设备进入超温
+- **WHEN** webhook URL 的路径含 `tok-s3cret`，webhook 返回 403，某设备开始一个超温事件
 - **THEN** 日志新增一条 WARN `notification failed`，含状态码 403
 - **AND** 服务 stderr 全文不含 `tok-s3cret`
 
