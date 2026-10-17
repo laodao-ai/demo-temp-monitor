@@ -1,7 +1,7 @@
 ---
 schema_version: 1
 change: alarm-notify
-branch: feat/alarm-notify
+branch: repro/alarm-notify-memo-hash
 generated_at: 2026-10-17T04:06:53-07:00
 decision_hash: b8fa85493133
 ---
