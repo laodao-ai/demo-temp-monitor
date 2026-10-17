@@ -47,11 +47,29 @@
 - **THEN** 进程退出码为 1，stderr 含 `config/local.env` 和行号 3
 - **AND** stderr 不含 `s3cret-xyz`
 
-#### Scenario: webhook 键是已知键
+#### Scenario: 推送地址键是已知键
 
 - **WHEN** `config/local.env` 写有合法的 `TM_DATABASE_URL` 和一行 `TM_ALARM_WEBHOOK_URL=http://127.0.0.1:9000/alarm`
 - **THEN** 服务不因未知键报错
 - **AND** `scripts/db-reset.sh` 与 `scripts/simulate.sh` 读取该文件时也不因未知键报错
+
+### Requirement: RUN-02 缺省监听回环地址
+
+`TM_LISTEN_ADDR` 未配置时，服务 SHALL 监听 `127.0.0.1:8080`。告警阈值未配置时 SHALL 为 50.0。
+
+启动日志 SHALL 写明是否启用了推送（字段 `alarm_push`，取值 `true` 或 `false`），MUST NOT 写出 `TM_ALARM_WEBHOOK_URL` 的值。
+
+#### Scenario: 不配置监听地址
+
+- **WHEN** 只配置了 `TM_DATABASE_URL`，启动服务
+- **THEN** 服务监听 `127.0.0.1:8080`，不监听其它网卡地址
+- **AND** 启动日志写出监听地址与告警阈值 50
+
+#### Scenario: 启动日志标明推送状态
+
+- **WHEN** 分别在未配置和配置了 `TM_ALARM_WEBHOOK_URL=http://127.0.0.1:9000/hook/tok-s3cret` 两种情况下启动服务
+- **THEN** 启动日志的 `alarm_push` 分别为 `false` 和 `true`
+- **AND** 启动日志不含 `tok-s3cret`
 
 ### Requirement: RUN-03 启动前置条件不满足时立即退出
 
@@ -85,7 +103,7 @@
 - **WHEN** `TM_ALARM_THRESHOLD_C=Inf`，启动服务
 - **THEN** 进程退出码为 1，stderr 指出 `TM_ALARM_THRESHOLD_C` 须为有限数
 
-#### Scenario: webhook URL 非法
+#### Scenario: 推送地址非法
 
 - **WHEN** `TM_ALARM_WEBHOOK_URL` 依次为 `ftp://127.0.0.1/tok-s3cret`、`127.0.0.1:9000/tok-s3cret`、`http:///tok-s3cret`，分别启动服务
 - **THEN** 每次进程退出码都为 1，stderr 指出 `TM_ALARM_WEBHOOK_URL` 的值非法
@@ -130,16 +148,16 @@
 - **WHEN** 处理上报时存储返回错误
 - **THEN** 响应状态码为 500，响应体为 `{"error": "internal error"}`
 
-#### Scenario: 推送失败的日志不含 webhook URL
+#### Scenario: 推送失败的日志不含推送地址
 
 - **WHEN** `TM_ALARM_WEBHOOK_URL` 为 `http://127.0.0.1:<端口>/hook/tok-s3cret?key=k3y-s3cret`
 - **AND** 接收端依次处于返回 500、一直不响应、端口无人监听三种状态，每种状态下各上报一条超温读数
-- **THEN** 日志中有三条 `alarm webhook failed`
+- **THEN** 日志中有三条 `alarm push failed`
 - **AND** 服务的全部日志输出不含 `tok-s3cret`、`k3y-s3cret`、`/hook/`
 
 ### Requirement: RUN-05 仓内只有示例配置
 
-仓库 SHALL 提交 `config/example.env`，其中所有连接信息都是占位值：主机为 `127.0.0.1`，口令为 `CHANGE_ME`，库名和用户名为 `temp_monitor_demo`。`TM_ALARM_WEBHOOK_URL` 在示例中 SHALL 以注释行出现，主机为 `127.0.0.1`，复制示例后默认不推送。`config/local.env`、`.pg-ops/`、`/.idea/` MUST 被 `.gitignore` 忽略。
+仓库 SHALL 提交 `config/example.env`，其中所有连接信息都是占位值：主机为 `127.0.0.1`，口令为 `CHANGE_ME`，库名和用户名为 `temp_monitor_demo`。`TM_ALARM_WEBHOOK_URL` 在示例中 SHALL 以注释行出现，主机为 `127.0.0.1`，复制示例后默认不推送；`http` 与 `https` 都接受，示例注释 SHALL 提醒地址含 token 时使用 `https`。`config/local.env`、`.pg-ops/`、`/.idea/` MUST 被 `.gitignore` 忽略。
 
 #### Scenario: 本地配置不会被提交
 
@@ -151,10 +169,11 @@
 - **WHEN** 检查 `config/example.env`
 - **THEN** 其中的连接串主机为 `127.0.0.1`，口令为 `CHANGE_ME`，并有注释说明连接 PgBouncer 的 session 池端口、口令需做 URL 编码
 
-#### Scenario: 示例配置中的 webhook 默认关闭
+#### Scenario: 示例配置中的推送默认关闭
 
 - **WHEN** 检查 `config/example.env`
-- **THEN** 含 `TM_ALARM_WEBHOOK_URL` 的行以 `#` 开头，其中主机为 `127.0.0.1`，并有注释说明 URL 中的 token 属于凭据
+- **THEN** 含 `TM_ALARM_WEBHOOK_URL` 的行以 `#` 开头，其中主机为 `127.0.0.1`
+- **AND** 注释说明地址中的 token 属于凭据，含 token 时应使用 `https`
 
 ### Requirement: RUN-06 收到终止信号时优雅退出
 
@@ -163,7 +182,7 @@
 - `Shutdown` 超过 5 秒时，服务 SHALL 记一条 WARN，仍关闭连接池，并以退出码 0 结束。[spec-review-amendment]
 - main MUST 等 `Shutdown` 返回后才退出。[spec-review-amendment]
 - 运行中 `Serve` 返回非预期错误时，服务 SHALL 以退出码 1 结束。[spec-review-amendment]
-- 配置了 webhook 时，进行中的请求结束后，服务 SHALL 在同一个 5 秒预算的剩余时间内继续发送待发推送。预算用完时中止在途推送，丢弃剩余推送，并记一条 WARN：消息为 `alarm webhook dropped at shutdown`，字段 `count` 为丢弃条数（含被中止的那条）。没有丢弃时不记这条 WARN。
+- 配置了接收端时，进行中的请求结束后，服务 SHALL 在同一个 5 秒预算的剩余时间内继续发送待发推送，不另加等待时间。预算用完时中止在途推送，丢弃剩余推送，并记一条 WARN：消息为 `alarm push dropped at shutdown`，字段 `count` 为丢弃条数（含被中止的那条）。没有丢弃时不记这条 WARN。
 
 #### Scenario: Ctrl-C 退出
 
@@ -173,10 +192,10 @@
 #### Scenario: 退出时推送发不完
 
 - **WHEN** 配置的接收端收到请求后一直不响应，服务已产生 10 条待发推送，向进程发送 SIGINT
-- **THEN** 进程在 6 秒内以退出码 0 结束
-- **AND** 日志中有一条 WARN `alarm webhook dropped at shutdown`，`count` 大于 0
+- **THEN** 进程在 6 秒内以退出码 0 结束（等待预算仍为 5 秒，多出的 1 秒是关闭连接池与测量的余量）
+- **AND** 日志中有一条 WARN `alarm push dropped at shutdown`，`count` 大于 0
 
 #### Scenario: 退出时推送能发完
 
 - **WHEN** 配置的接收端立即返回 200，服务有 3 条待发推送时向进程发送 SIGINT
-- **THEN** 接收端收到全部 3 条推送，进程以退出码 0 结束，日志中没有 `alarm webhook dropped at shutdown`
+- **THEN** 接收端收到全部 3 条推送，进程以退出码 0 结束，日志中没有 `alarm push dropped at shutdown`
