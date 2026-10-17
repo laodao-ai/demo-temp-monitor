@@ -119,6 +119,7 @@
 | `internal/redact`（改） | 额外密钥全文替换 | Go | 同上 |
 | `internal/service`（改） | 超温时调用 `Notifier.Notify` | Go | 同上 |
 | `cmd/temp-monitor`（改） | 装配 notifier、启动日志、错误提示 | Go | 同上 |
+| `internal/testdb`（改）[spec-review-amendment] | allowed keys 提示改由 `config.Keys` 派生 | Go | 测试辅助包 |
 | `scripts/lib/local_env.sh`（改） | 脚本侧接受 3 个新键 | bash | 仓内脚本 |
 
 ## Technical Approach
@@ -126,18 +127,28 @@
 以下是实现层面的选择。需求层决策及被砍候选见 Decisions 节指向的纪要。
 
 1. **接口形状**：`type Notifier interface { Notify(a Alarm) }`，无返回值、不阻塞。`Alarm{DeviceID string; TemperatureC, ThresholdC float64; RecordedAt time.Time}`，`RecordedAt` 取 `store.Reading.RecordedAt`。发送方单独定义 `type Sender interface { Send(ctx context.Context, a Alarm) error }`，`DingTalk` 实现它，`Throttled` 持有它。备选：`Notify` 返回 error 由 service 处理——否决，service 拿到 error 也只能写日志，且会诱导同步调用。
+   构造函数（T3/T4 共用，main 装配与 5.1 端到端用例都经由它们）[spec-review-amendment]：`notify.NewDingTalk(webhook, secret string, cooldown time.Duration) *DingTalk`（`cooldown` 只用于正文末行）；`notify.NewThrottled(s Sender, cooldown time.Duration, logger *slog.Logger) *Throttled`。main 用同一个 `cfg.NotifyCooldown` 调这两个构造函数。`logger` MUST 是 main 构造的脱敏 logger，`notify` 包内 MUST NOT 使用 `slog.Default()`。包内可改字段：`Throttled.timeout`（缺省 5 秒）、`Throttled.now`、`DingTalk.now`。
 2. **`service.New` 加第四个参数 `n notify.Notifier`**，4 个调用点同步改，测试传 `notify.Nop{}` 或记录型假实现。`Service` 自身仍无可变状态，冷却状态在 `Throttled`；`service.go:24` 的注释保持成立。备选：函数式 option——否决，只有一个新依赖，加 option 机制是加宽。
 3. **冷却放在 `Throttled` 而不是 `Service`**：冷却只服务于推送，日志不受冷却影响（ALM-04）。冷却在**派发时**记录 `last = now`，推送失败不回滚。理由：失败多为网络或限流，立刻重放只会加重限流；持续超温会在下个冷却期重推（纪要 D4/D5）。
 4. **并发**：`sync.Mutex` 保护 `map[string]time.Time`，判断与写入在同一临界区（GO-01、GO-03）。备选 `sync.Map` + `LoadOrStore`——否决，「过期才覆盖」需要比较后写，`sync.Map` 写不成原子的「判断 + 覆盖」，还得再加锁。
-5. **goroutine 生命周期**（GO-02）：每次放行启动一个 goroutine，`ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)`，不继承请求 ctx（请求结束即取消）。每个 goroutine 最多存活 5 秒。`Throttled` 内含 `sync.WaitGroup`，导出 `Wait()` 仅供测试等待在途推送；`run` 停机不调用它（Non-Goals 第 1 条）。
+5. **goroutine 生命周期**（GO-02）：每次放行启动一个 goroutine，`ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)`，不继承请求 ctx（请求结束即取消）。每个 goroutine 最多存活 5 秒。`Throttled` 内含 `sync.WaitGroup`，导出 `Wait()` 仅供测试等待在途推送；`run` 停机不调用它（Non-Goals 第 1 条）。5 秒取自字段 `Throttled.timeout`，测试可改短 [spec-review-amendment]。goroutine 入口 `defer` 一个 `recover`：发生 panic 时写 ERROR `alarm notification failed`，`error` 为 `panic: <值>`，进程不退出（推送 goroutine 不在 `http.Server` 的 recover 范围内）[spec-review-amendment]。
 6. **时钟注入**：`Throttled` 持有 `now func() time.Time`，构造函数缺省 `time.Now`，包内测试替换。`DingTalk` 同样持有 `now`，用于加签时间戳。
 7. **加签**：配置了 secret 时，`ts := now().UnixMilli()`；原文 `fmt.Sprintf("%d\n%s", ts, secret)`；`HMAC-SHA256(key=secret, msg=原文)`；`base64.StdEncoding`；解析 webhook URL，`q := u.Query(); q.Set("timestamp", ts); q.Set("sign", sig); u.RawQuery = q.Encode()`（`Encode` 负责 URL 编码）。测试向量（独立用 Python 标准库算出）：secret `SECtest0000000000000000000000000000000000000000000000000000000000`、ts `1700000000000` ⇒ sign `szPcgtoCabDjIT69N8i2Omun8ktW8akfg42aQqadSCU=`，URL 中为 `szPcgtoCabDjIT69N8i2Omun8ktW8akfg42aQqadSCU%3D`。
-8. **成功判定**：`resp.StatusCode` 在 200–299 且响应体（最多读 64 KiB）解析为 `{"errcode": int, "errmsg": string}` 且 `errcode == 0`。其余全部算失败，error 文本含 HTTP 状态码或 `errcode`/`errmsg`。
+8. **成功判定**：`resp.StatusCode` 在 200–299 且响应体（最多读 64 KiB）解析为 `{"errcode": int, "errmsg": string}` 且 `errcode == 0`。其余全部算失败，error 文本含 HTTP 状态码或 `errcode`/`errmsg`。[spec-review-amendment] 具体做法：
+   - 解码目标的 `errcode` 字段类型为 `*int`。字段缺失（`{}`、`null`、`{"status":"ok"}`）或类型不对（`"0"`）一律判失败，不当作 0。
+   - 拿到 `resp` 后立即 `defer resp.Body.Close()`。读取用 `io.LimitReader(resp.Body, 64<<10)`；超过上限导致 JSON 截断时按「响应体不是 JSON」判失败。
+   - error 文本固定为以下四种，均不含 URL：
+     - `dingtalk http <状态码>`
+     - `dingtalk errcode <n>: <errmsg>; check that TM_DINGTALK_SECRET matches the robot's signing setting, or that its keyword is 超温告警`
+     - `dingtalk response is not valid JSON`
+     - `dingtalk request: <*url.Error 的 .Err>; check outbound access or HTTPS_PROXY`
 9. **不打 `*url.Error` 全文**：`http.Client.Do` 返回的 `*url.Error` 的 `Error()` 含完整请求 URL（含 `access_token` 与 `sign`）。`DingTalk.Send` 用 `errors.As` 取出 `*url.Error` 后只包装其 `.Err`，再由脱敏 handler 兜底（见 Security 节）。
-10. **HTTP 客户端**：`&http.Client{}`，使用 `http.DefaultTransport`（读 `HTTPS_PROXY`），超时由 ctx 控制。
-11. **webhook 校验**：`url.Parse` 成功、`Host` 非空、scheme 为 `http` 或 `https`（纪要 D10；`http` 供 httptest 假服务器使用）。
+10. **HTTP 客户端**：`&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}`，使用 `http.DefaultTransport`（读 `HTTPS_PROXY`），超时由 ctx 控制。不跟随重定向，3xx 按非 2xx 判失败。这样请求体不会被转发到 `Location` 指向的其它主机，POST 也不会被改成 GET [spec-review-amendment]。
+11. **webhook 校验**：`url.Parse` 成功、`Host` 非空、scheme 为 `http` 或 `https`（纪要 D10；`http` 供 httptest 假服务器使用）；`url.ParseQuery(u.RawQuery)` 不报错，否则加签时 `u.Query()` 会静默丢掉 `access_token` [spec-review-amendment]。
 12. **白名单单一源**：`config` 导出 `Keys = []string{KeyDatabaseURL, KeyListenAddr, KeyThreshold, KeyDingTalkWebhook, KeyDingTalkSecret, KeyNotifyCooldown}`，`knownKeys`、`main.configHint`、`testdb.configFailure` 都从它派生。shell 侧无法引用 Go 常量，加一条 Go 测试读取 `scripts/lib/local_env.sh`，断言其 `case` 分支与 allowed keys 文案都包含 `config.Keys` 的全部键（C2）。
 13. **启动日志**：未配置 ⇒ `logger.Info("notify disabled")`；已配置 ⇒ `logger.Info("notify enabled", "cooldown", cfg.NotifyCooldown.String(), "signed", secret != "")`。不打印 webhook。
+    **推送日志字段** [spec-review-amendment]：`notify` 包的日志只带两个字段，`device_id`（字符串）和 `error`（字符串，即 `err.Error()`），MUST NOT 携带 URL、`*http.Request`、`*http.Response` 或其它结构体。`error` 用字符串属性而不用 error 值，原因是 `redact` 的口令规则：DB 连接串里提取不出口令时，所有 error 值都会被整体替换为 `error details withheld`（`redact.go:127-130`），NTF-05 要求的状态码与 errcode 就丢了。推送错误文本不可能含 DB 口令，作为字符串属性仍会经过连接串与额外密钥的全文替换。
+    **命名** [spec-review-amendment]：渠道相关的两个键带 `DINGTALK`；冷却与渠道无关，用 `NOTIFY`。冷却值是 Go duration 字符串，与 `time.ParseDuration` 对齐，因此不带单位后缀。webhook 未配置时冷却键不报错，而 secret 报错：`config/example.env` 自带 `TM_NOTIFY_COOLDOWN=10m`，复制出的 local.env 不该因此启动失败；单独配了 secret 则是配置错误。
 14. **消息正文**（`msgtype: text`）：
 
     ```
@@ -148,7 +159,7 @@
     该设备 10m0s 内不再重复推送
     ```
 
-    数值用 `strconv.FormatFloat(v, 'f', -1, 64)`，时间用 RFC 3339 UTC，冷却用 `time.Duration.String()`。
+    数值用 `strconv.FormatFloat(v, 'f', -1, 64)`，时间用 `RecordedAt.UTC().Format(time.RFC3339)`（pgstore 返回的 `timestamptz` 带本地时区，必须显式 `.UTC()`）[spec-review-amendment]，冷却用 `time.Duration.String()`。
 
 ## Data Model & Lifecycle
 
@@ -163,7 +174,7 @@
 ## External Dependency: DingTalk Robot（TG-08 / D-4）
 
 - **超时**：单次推送上限 5 秒（ctx 超时，包含连接、TLS、发送、读响应）。
-- **写操作回滚路径**：消息一经钉钉接受无法撤回；不重试，所以不会产生重复消息。功能回滚 = 清空 `TM_DINGTALK_WEBHOOK` 后重启（即刻停推），或回退本 change 的提交。
+- **写操作回滚路径**：消息一经钉钉接受无法撤回；不重试，所以不会产生重复消息。功能回滚 = 把 `TM_DINGTALK_WEBHOOK` 从环境变量和 `config/local.env` 两处都删掉后重启（即刻停推），或回退本 change 的提交。只把环境变量设为空串不够：空值等同未配置，会回落到 `config/local.env` 里的值（RUN-01）[spec-review-amendment]。
 
 请求示例（加签时 URL 附 `&timestamp=...&sign=...`）：
 
@@ -200,7 +211,11 @@ Content-Type: application/json
 | `errcode != 0` | 加签不符、关键词不含、限流、token 失效 | 同上 | ERROR，error 含 `errcode` 与 `errmsg` | 单元：httptest 回 200 + `{"errcode":1,"errmsg":"x"}` |
 | 响应体不是 JSON | 代理或网关返回 HTML | 同上 | ERROR | 单元 |
 | 停机时在途 | SIGTERM 时 goroutine 未结束 | 不处理 | 该条丢失，无日志 | 不测（接受的边角） |
-| 冷却内 | 同设备冷却期内再次超温 | `Throttled` | 不推送；DEBUG `alarm notification suppressed` | 单元：注入时钟 |
+| 重定向 [spec-review-amendment] | 钉钉、代理或网关回 3xx | `DingTalk.Send`（不跟随） | ERROR，error 含状态码 | 单元：httptest 回 302 |
+| 2xx 但无 `errcode` [spec-review-amendment] | 网关回 200 + `{}` / `{"status":"ok"}` | `DingTalk.Send` | ERROR，不写 `alarm notification sent` | 单元：httptest 回 200 + `{}` |
+| 推送 goroutine panic [spec-review-amendment] | Sender 或消息组装出现未预期的 panic | `Throttled` 的 recover | ERROR `alarm notification failed`，`error` 以 `panic:` 开头；进程不退出 | 单元：假 Sender panic |
+| DB 连接串无口令 [spec-review-amendment] | `TM_DATABASE_URL` 走 pgpass / trust，不含口令 | `Throttled` 以字符串属性记 error | ERROR 的 `error` 仍含状态码 / errcode，不被替换为 `error details withheld` | 单元：main，无口令连接串 + 假钉钉 502 |
+| 冷却内 | 同设备冷却期内再次超温 | `Throttled` | 不推送；写 DEBUG `alarm notification suppressed`，服务默认级别 INFO 下不输出（预期行为）[spec-review-amendment] | 单元：注入时钟 + Debug 级 handler |
 | 配置非法 | webhook 格式错、冷却非法、secret 无 webhook | `config.Load` | 启动失败退出码 1，stderr 只含键名 + 提示 | 单元：config、main |
 
 ## Observability
@@ -228,7 +243,9 @@ Content-Type: application/json
 
 - **信任边界**：服务 → 钉钉公网接口。出站数据只有设备 ID、温度、阈值、时间，不含连接信息。
 - **密钥**：`TM_DINGTALK_WEBHOOK`（含 `access_token`）与 `TM_DINGTALK_SECRET` 只从环境变量或 `config/local.env` 读；`config/example.env` 两项留空。
-- **不落日志**：`redact.Handler` 签名扩为 `Handler(inner slog.Handler, connURL string, secrets ...string) slog.Handler`，现有调用不需改。`main` 传入 webhook 全串、从中解析出的 `access_token` 值、secret 值（空串忽略）。这些密钥在**消息、字符串属性、分组成员、error 值**中一律全文替换为 `***`。口令规则（只替换 error 值）不变。
+- **不落日志**：`redact.Handler` 签名扩为 `Handler(inner slog.Handler, connURL string, secrets ...string) slog.Handler`，现有调用不需改。`main` 传入 webhook 全串、从中解析出的 `access_token` 值、secret 值（空串忽略）。这些密钥在**消息、字符串属性、分组成员、error 值**中一律全文替换为 `***`。口令规则（只替换 error 值）不变。经 `WithAttrs` / `WithGroup` 派生的 handler MUST 带上同一组 secrets（`redact.go:96`、`:100` 现在是按字段字面量重建 handler，新增字段时两处都要改）[spec-review-amendment]。
+  - 加签后实际发出的请求 URL 与配置的 `TM_DINGTALK_WEBHOOK` 全串不同：`q.Encode()` 会重排并重新编码查询参数，还会追加 `timestamp`/`sign`。对请求 URL 起保护作用的是 `access_token` 值的替换和 `*url.Error` 只取 `.Err` 这两条，全串替换只兜住配置值本身 [spec-review-amendment]。
+  - 非 error 的 `KindAny` 值（`*url.URL`、`*http.Request`、`fmt.Stringer` 等）会原样通过 `redact`（`redact.go:135`）。这一面靠 Technical Approach 第 13 条的推送日志字段约束兜住，不扩展 redact [spec-review-amendment]。
   - 为什么额外密钥可以全文替换，而口令不行：issue B1 的误伤来自短而常见的口令；webhook 全串与 `access_token` 是长随机串，secret 是 `SEC` 开头的长串，不会是普通文本的子串。若人工配置了很短的 secret，宁可误伤也不泄露。
 - **明文传输**：钉钉机器人地址本身是 https；配置校验接受 http 以便本机测试（纪要 D10），配置成公网 http 地址时 token 会明文传输，由配置者负责。
 - **配置报错**：沿用不回显值的约定，只给键名与行号。
@@ -252,7 +269,7 @@ Content-Type: application/json
 1. 部署新版本。不配置 `TM_DINGTALK_WEBHOOK` 时行为与旧版一致，只多一行 `notify disabled` 日志。
 2. 值班群添加自定义机器人，安全设置选「加签」（推荐）或关键词「超温告警」。
 3. 在 `config/local.env` 或环境变量填 `TM_DINGTALK_WEBHOOK`（加签时再填 `TM_DINGTALK_SECRET`），重启服务。
-4. 回滚：清空 `TM_DINGTALK_WEBHOOK` 并重启；或回退提交。无数据迁移。
+4. 回滚：从环境变量和 `config/local.env` 两处删掉 `TM_DINGTALK_WEBHOOK` 并重启（只把环境变量置空会回落到 local.env 的值）[spec-review-amendment]；或回退提交。无数据迁移。
 
 ## Compliance
 

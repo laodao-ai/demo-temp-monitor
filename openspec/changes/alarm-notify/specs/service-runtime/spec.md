@@ -61,7 +61,7 @@
 
 - `TM_DATABASE_URL` 未配置；
 - `TM_ALARM_THRESHOLD_C` 不是有限数，`NaN`、`Inf`、`-Inf` 都视为非法；[spec-review-amendment]
-- `TM_DINGTALK_WEBHOOK` 已配置但不是带主机的绝对 URL，或 scheme 不是 `http`、`https`；
+- `TM_DINGTALK_WEBHOOK` 已配置但不是带主机的绝对 URL，或 scheme 不是 `http`、`https`，或查询串无法解析 [spec-review-amendment]；
 - `TM_NOTIFY_COOLDOWN` 已配置但不是合法的 Go duration，或不大于 0；
 - `TM_DINGTALK_SECRET` 已配置而 `TM_DINGTALK_WEBHOOK` 未配置；
 - `config/local.env` 有不符合 RUN-01 文法的行；[spec-review-amendment]
@@ -93,7 +93,7 @@
 
 #### Scenario: webhook 非法
 
-- **WHEN** 分别设置 `TM_DINGTALK_WEBHOOK` 为 `not a url tok-123`、`ftp://example.invalid/robot/send?access_token=tok-123`、`/robot/send?access_token=tok-123`，启动服务
+- **WHEN** `TM_DATABASE_URL` 已配置 [spec-review-amendment]，分别设置 `TM_DINGTALK_WEBHOOK` 为 `not a url tok-123`、`ftp://example.invalid/robot/send?access_token=tok-123`、`/robot/send?access_token=tok-123`，启动服务
 - **THEN** 每次进程退出码都为 1，stderr 为一行 `TM_DINGTALK_WEBHOOK is invalid; must be an absolute http or https URL`
 - **AND** stderr 不含 `tok-123`
 
@@ -104,12 +104,12 @@
 
 #### Scenario: 冷却非法
 
-- **WHEN** 分别设置 `TM_NOTIFY_COOLDOWN` 为 `ten`、`0`、`-1m`，启动服务
+- **WHEN** `TM_DATABASE_URL` 已配置 [spec-review-amendment]，分别设置 `TM_NOTIFY_COOLDOWN` 为 `ten`、`0`、`-1m`，启动服务
 - **THEN** 每次进程退出码都为 1，stderr 为一行 `TM_NOTIFY_COOLDOWN is invalid; must be a positive duration, such as 10m`
 
 #### Scenario: 配了 secret 未配 webhook
 
-- **WHEN** 设置 `TM_DINGTALK_SECRET=SECabc`，未设置 `TM_DINGTALK_WEBHOOK`，启动服务
+- **WHEN** `TM_DATABASE_URL` 已配置，设置 `TM_DINGTALK_SECRET=SECabc`，未设置 `TM_DINGTALK_WEBHOOK`，启动服务 [spec-review-amendment]
 - **THEN** 进程退出码为 1，stderr 为一行 `TM_DINGTALK_SECRET is set but TM_DINGTALK_WEBHOOK is not; set TM_DINGTALK_WEBHOOK or remove TM_DINGTALK_SECRET`
 - **AND** stderr 不含 `SECabc`
 

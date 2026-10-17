@@ -18,7 +18,7 @@
 
 - **WHEN** 阈值为 50.0，已配置 webhook，已注册设备 `sensor-01` 上报 `{"temperature_c": 55.0}`
 - **THEN** webhook 收到恰好一次 POST，请求体解析为 JSON 后 `msgtype` 为 `text`，`at.isAtAll` 为 `true`
-- **AND** `text.content` 含 `超温告警`、`sensor-01`、`55`、`50`，以及该读数的入库时间
+- **AND** `text.content` 含 `超温告警`、`设备：sensor-01`、`温度：55°C`、`阈值 50°C`，以及该读数入库时间的 UTC RFC 3339 形式（与 `RecordedAt.UTC().Format(time.RFC3339)` 相同）[spec-review-amendment]
 - **AND** 日志中新增一条 `over-temperature alarm` WARN，与未配置 webhook 时相同
 
 #### Scenario: 等于阈值不推送
@@ -28,7 +28,7 @@
 
 ### Requirement: NTF-02 推送不影响上报
 
-推送 SHALL 在上报请求之外异步进行：上报接口的状态码、响应体与耗时 MUST NOT 取决于推送的结果或耗时。单次推送 SHALL 在 5 秒内结束，超时视为失败（NTF-05）。
+推送 SHALL 在上报请求之外异步进行：上报接口的状态码、响应体与耗时 MUST NOT 取决于推送的结果或耗时。单次推送 SHALL 在 5 秒内结束，超时视为失败（NTF-05）。推送过程中出现 panic 时，服务 MUST NOT 退出，SHALL 写一条 `alarm notification failed` ERROR [spec-review-amendment]。
 
 #### Scenario: 钉钉挂起
 
@@ -39,7 +39,13 @@
 #### Scenario: 钉钉返回错误
 
 - **WHEN** 已配置 webhook，webhook 对每个请求回 HTTP 500，已注册设备上报一条超温读数
-- **THEN** 上报响应状态码为 201，响应体与未配置 webhook 时相同
+- **THEN** 上报响应状态码为 201，响应体的字段集合（`id`、`device_id`、`temperature_c`、`recorded_at`）与未配置 webhook 时相同 [spec-review-amendment]
+
+#### Scenario: 推送中 panic 不影响服务 [spec-review-amendment]
+
+- **WHEN** 已配置 webhook，发送方在推送时 panic，已注册设备上报一条超温读数，随后再上报一条普通读数
+- **THEN** 两次上报都返回 201，服务进程仍在运行
+- **AND** 日志中新增一条 `alarm notification failed` ERROR
 
 ### Requirement: NTF-03 按设备冷却
 
@@ -49,7 +55,7 @@
 - 冷却从**发起**推送时开始计时，推送失败也计入。
 - 同一设备的多条超温读数并发到达时，系统 MUST 只为其中一条发起推送。
 - 冷却记录只在进程内存中，重启后清空。
-- 冷却只影响推送；每条超温读数的 WARN 日志照写（ALM-04）。
+- 冷却只影响推送；每条超温读数的 WARN 日志照写（ALM-04）。冷却不属于 ALM-04 所禁止的「告警去重」：ALM-04 约束的是 WARN 告警日志，本能力约束的是钉钉推送 [spec-review-amendment]。
 
 #### Scenario: 冷却期内不重复推送
 
@@ -104,7 +110,7 @@
 
 ### Requirement: NTF-05 成功判定与失败日志
 
-系统 SHALL 只在 HTTP 状态码为 2xx、且响应体为 JSON 并且其 `errcode` 为 0 时判定推送成功，此时写一条 INFO 日志，消息为 `alarm notification sent`，字段含 `device_id`。其余情况，包括网络错误、5 秒超时、非 2xx、响应体不是 JSON、`errcode` 不为 0，系统 SHALL 写一条 ERROR 日志，消息为 `alarm notification failed`，字段含 `device_id` 与 `error`。每条放行的超温读数 MUST 只发一次请求，失败不重试。
+系统 SHALL 只在 HTTP 状态码为 2xx、且响应体为 JSON 并且其中**存在**整数字段 `errcode` 且值为 0 时判定推送成功（缺少 `errcode` 字段不算 0）[spec-review-amendment]，此时写一条 INFO 日志，消息为 `alarm notification sent`，字段含 `device_id`。其余情况，包括网络错误、5 秒超时、非 2xx（含 3xx，系统不跟随重定向）、响应体不是 JSON、缺少 `errcode`、`errcode` 不为 0 [spec-review-amendment]，系统 SHALL 写一条 ERROR 日志，消息为 `alarm notification failed`，字段含 `device_id` 与 `error`。每条放行的超温读数 MUST 只发一次请求，失败不重试。
 
 #### Scenario: 推送成功
 
@@ -121,6 +127,22 @@
 
 - **WHEN** webhook 回 HTTP 502，已注册设备上报一条超温读数
 - **THEN** 日志中新增一条 `alarm notification failed` ERROR，`error` 含 `502`，webhook 只收到一次请求
+
+#### Scenario: HTTP 200 但缺少 errcode [spec-review-amendment]
+
+- **WHEN** webhook 回 HTTP 200，响应体为 `{}`，已注册设备上报一条超温读数
+- **THEN** 日志中新增一条 `alarm notification failed` ERROR，没有 `alarm notification sent`
+
+#### Scenario: 重定向不跟随 [spec-review-amendment]
+
+- **WHEN** webhook 回 HTTP 302，`Location` 指向另一个 httptest 服务器，已注册设备上报一条超温读数
+- **THEN** 日志中新增一条 `alarm notification failed` ERROR，`error` 含 `302`
+- **AND** `Location` 指向的服务器没有收到请求
+
+#### Scenario: 数据库连接串不含口令时失败原因仍可见 [spec-review-amendment]
+
+- **WHEN** `TM_DATABASE_URL` 不含口令（如 `postgres://temp_monitor_demo@127.0.0.1:7432/temp_monitor_demo`），webhook 回 HTTP 502，已注册设备上报一条超温读数
+- **THEN** 日志中 `alarm notification failed` ERROR 的 `error` 含 `502`，不是 `error details withheld`
 
 #### Scenario: 响应体不是 JSON
 
