@@ -6,7 +6,7 @@
 
 系统 SHALL 对每一条超温读数各写一条告警。系统 MUST NOT 做去重、合并或滞回。
 
-本条只约束告警日志。向 webhook 发通知的时机另有规则，见 `over-temperature-notify`；通知是否发出，MUST NOT 影响告警日志是否写入。
+本条只约束告警日志。通知按超温段发送，规则见 `over-temperature-notify`；通知是否发出，MUST NOT 影响告警日志是否写入。
 
 #### Scenario: 连续两条超温读数
 

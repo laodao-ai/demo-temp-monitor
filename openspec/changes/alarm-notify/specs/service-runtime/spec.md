@@ -54,7 +54,7 @@
 
 ### Requirement: RUN-02 缺省监听回环地址
 
-`TM_LISTEN_ADDR` 未配置时，服务 SHALL 监听 `127.0.0.1:8080`。告警阈值未配置时 SHALL 为 50.0。`TM_NOTIFY_WEBHOOK_URL` 未配置时，服务 SHALL 不发通知。启动日志 SHALL 写出通知是否开启（`notify=on` 或 `notify=off`），MUST NOT 写出 webhook URL。
+`TM_LISTEN_ADDR` 未配置时，服务 SHALL 监听 `127.0.0.1:8080`。告警阈值未配置时 SHALL 为 50.0。`TM_NOTIFY_WEBHOOK_URL` 未配置时，服务 SHALL 不发通知。启动日志 SHALL 写出通知是否开启（`notify=on` 或 `notify=off`），MUST NOT 写出 webhook URL。`notify=on` 只表示配置合法；启动时服务 MUST NOT 向 webhook 发探测请求，能否连通由第一次通知的结果体现。
 
 #### Scenario: 不配置监听地址
 
@@ -66,6 +66,12 @@
 
 - **WHEN** 配置了 `TM_DATABASE_URL` 和合法的 `TM_NOTIFY_WEBHOOK_URL`，启动服务
 - **THEN** 启动日志写出 `notify=on`，不含 webhook URL
+- **AND** 启动过程中 webhook 没有收到任何请求
+
+#### Scenario: webhook 不可达也能启动
+
+- **WHEN** `TM_NOTIFY_WEBHOOK_URL` 合法，但指向一个没有服务在监听的端口，其余前置条件满足，启动服务
+- **THEN** 服务正常开始监听，启动日志写出 `notify=on`
 
 ### Requirement: RUN-03 启动前置条件不满足时立即退出
 
@@ -122,7 +128,7 @@
 
 ### Requirement: RUN-04 连接信息不出现在输出中
 
-服务的日志、HTTP 响应，以及 `scripts/` 下各脚本的输出，MUST NOT 包含 `TM_DATABASE_URL` 的值，也 MUST NOT 包含其中口令的任何片段。[spec-review-amendment] 同样 MUST NOT 包含 `TM_NOTIFY_WEBHOOK_URL` 的值，也 MUST NOT 包含其 path 与 query 部分。5xx 响应体 SHALL 固定为 `{"error": "internal error"}`，细节只写服务端日志。
+服务的日志、HTTP 响应，以及 `scripts/` 下各脚本的输出，MUST NOT 包含 `TM_DATABASE_URL` 的值，也 MUST NOT 包含其中口令的任何片段。[spec-review-amendment] 服务与脚本 MUST NOT 把 `TM_NOTIFY_WEBHOOK_URL` 的值或从中取出的任何片段写入这些输出。5xx 响应体 SHALL 固定为 `{"error": "internal error"}`，细节只写服务端日志。
 
 #### Scenario: 连库失败的日志
 
