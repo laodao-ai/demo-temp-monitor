@@ -8,7 +8,8 @@
 
 - 逐行读，去掉行尾 `\r`。空行和首个非空白字符为 `#` 的行忽略。[spec-review-amendment]
 - 其余行按第一个 `=` 切分，键和值各自去掉两端空白。[spec-review-amendment]
-- 没有 `=` 的行、键不在六个已知键里的行 MUST 报错。报错只给文件名和行号，MUST NOT 回显行内容。报错的提示 MUST 列出全部六个已知键，服务与脚本列出的键 MUST 一致。[spec-review-amendment]
+- 没有 `=` 的行、键不在六个已知键里的行 MUST 报错。报错只给文件名和行号，MUST NOT 回显行内容。[spec-review-amendment]
+- 未知键的报错提示 MUST 列出全部六个已知键，服务与脚本列出的键 MUST 一致。
 - 值以 `"` 或 `'` 开头时 MUST 报错，只给行号，并提示去掉引号。[spec-review-amendment]
 - 值按字面使用，不做变量展开，不支持行内注释，不支持 `export` 前缀。[spec-review-amendment]
 - 文件里的值为空，等同未配置。环境变量为空串，也等同未配置。[spec-review-amendment]

@@ -28,7 +28,7 @@
 
 ### Requirement: NTF-02 推送不影响上报
 
-推送 SHALL 在上报请求之外异步进行：上报接口的状态码、响应体与耗时 MUST NOT 取决于推送的结果或耗时。单次推送 SHALL 在 5 秒内结束，超时视为失败（NTF-05）。
+推送 SHALL 在上报请求之外异步进行：上报接口的状态码、响应体与耗时 MUST NOT 取决于推送的结果或耗时。单次推送 SHALL 在 5 秒内结束，超时视为失败（NTF-05）。推送过程中发生的 panic MUST NOT 终止服务进程，按推送失败处理（NTF-05）。[spec-review-amendment]
 
 #### Scenario: 钉钉挂起
 
@@ -40,6 +40,12 @@
 
 - **WHEN** 已配置 webhook，webhook 对每个请求回 HTTP 500，已注册设备上报一条超温读数
 - **THEN** 上报响应状态码为 201，响应体与未配置 webhook 时相同
+
+#### Scenario: 推送代码 panic 不打挂服务 [spec-review-amendment]
+
+- **WHEN** 推送发送方在发送时 panic，已注册设备上报一条超温读数
+- **THEN** 日志中新增一条 `alarm notification failed` ERROR，`error` 含 `panic`
+- **AND** 服务进程仍在运行，随后的上报照常返回 201
 
 ### Requirement: NTF-03 按设备冷却
 
@@ -104,7 +110,7 @@
 
 ### Requirement: NTF-05 成功判定与失败日志
 
-系统 SHALL 只在 HTTP 状态码为 2xx、且响应体为 JSON 并且其 `errcode` 为 0 时判定推送成功，此时写一条 INFO 日志，消息为 `alarm notification sent`，字段含 `device_id`。其余情况，包括网络错误、5 秒超时、非 2xx、响应体不是 JSON、`errcode` 不为 0，系统 SHALL 写一条 ERROR 日志，消息为 `alarm notification failed`，字段含 `device_id` 与 `error`。每条放行的超温读数 MUST 只发一次请求，失败不重试。
+系统 SHALL 只在 HTTP 状态码为 2xx、且响应体为 JSON 对象、含整数字段 `errcode` 并且其值为 0 时判定推送成功（`errcode` 缺失或为 `null` 视为失败）[spec-review-amendment]；系统 MUST NOT 跟随 HTTP 重定向，3xx 按非 2xx 处理 [spec-review-amendment]。判定成功时写一条 INFO 日志，消息为 `alarm notification sent`，字段含 `device_id`。其余情况，包括网络错误、5 秒超时、非 2xx（含 3xx）、响应体不是 JSON、`errcode` 缺失或不为 0、推送代码 panic [spec-review-amendment]，系统 SHALL 写一条 ERROR 日志，消息为 `alarm notification failed`，字段含 `device_id` 与 `error`。每条放行的超温读数 MUST 只发一次请求，失败不重试。
 
 #### Scenario: 推送成功
 
@@ -126,6 +132,17 @@
 
 - **WHEN** webhook 回 HTTP 200，响应体为 `<html>gateway</html>`，已注册设备上报一条超温读数
 - **THEN** 日志中新增一条 `alarm notification failed` ERROR
+
+#### Scenario: JSON 但缺 errcode [spec-review-amendment]
+
+- **WHEN** webhook 回 HTTP 200，响应体分别为 `{}`、`null`、`{"errcode":null}`，已注册设备各上报一条超温读数
+- **THEN** 每次日志中都新增一条 `alarm notification failed` ERROR，没有 `alarm notification sent`
+
+#### Scenario: 不跟随重定向 [spec-review-amendment]
+
+- **WHEN** webhook 回 HTTP 307，`Location` 指向另一台本机 httptest 服务器，已注册设备上报一条超温读数
+- **THEN** 日志中新增一条 `alarm notification failed` ERROR，`error` 含 `307`
+- **AND** 跳转目标没有收到请求，webhook 只收到一次请求
 
 #### Scenario: webhook 不可达
 
