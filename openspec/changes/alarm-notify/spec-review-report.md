@@ -1,3 +1,9 @@
+---
+ship-gate:
+  design_approved: true
+  reviewed_sha: 5f8e45b0545e822fe3b9bbba289dbc834e2ecbb4f5a59c9ec18494379799a32d
+  reviewed_manifest: MTAwNjQ0IGJsb2IgMzA0N2JmZGI0YjgzZDZlY2U1MThjNTQ1MzM5YTU5M2FkZjVhYjVjZAlvcGVuc3BlYy9jaGFuZ2VzL2FsYXJtLW5vdGlmeS9kZXNpZ24ubWQAMTAwNjQ0IGJsb2IgODNmM2VmZmI1YmM2NjNlZDNhZDJiZTk2NmE5Y2Y5NGY5MGYzZWM3MwlvcGVuc3BlYy9jaGFuZ2VzL2FsYXJtLW5vdGlmeS9wcm9wb3NhbC5tZAAxMDA2NDQgYmxvYiBjMmE0Mjk3OTM2MjlmZGM2MTkzNzE2Y2IyZmUyNDVhZWIzY2FmMTk5CW9wZW5zcGVjL2NoYW5nZXMvYWxhcm0tbm90aWZ5L3NwZWNzL2FsYXJtLW5vdGlmaWNhdGlvbi9zcGVjLm1kADEwMDY0NCBibG9iIGQ3MjVkYTU4MDU0OTFmN2E4NzM4MjA1MDRkYTI4ZTI3YTcxOGI0M2EJb3BlbnNwZWMvY2hhbmdlcy9hbGFybS1ub3RpZnkvc3BlY3Mvc2VydmljZS1ydW50aW1lL3NwZWMubWQ=
+---
 # spec-review-report · alarm-notify
 
 评审日期：2026-10-17 · 评审对象：`openspec/changes/alarm-notify/` 四件套（proposal / design / specs ×2 / tasks）+ `decision-memo.md`（评审基线提交 `fd14628`）
@@ -43,7 +49,14 @@
 
 <!-- sdflow:gate-questions v1 q="scope,deps,risk" -->
 
-### [需拍板]
+### 拍板记录
+
+- **设计门已拍板批准**，日期 2026-10-17。人的原话：「Q1 同意推荐，批准」。
+- Q1：选推荐 A，四件套中已先行写入的修订维持不变。
+- 拍板三问：人做的是整体批准，没有逐项回复；按整体批准记为三问均认。
+- 已裁掉区 X1–X9：人未提出异议。
+
+### [需拍板]（已拍板：Q1 选 A）
 
 **Q1 推送失败日志怎样绕开 ADR-0005 的「取不出口令 ⇒ error 值整体 withheld」**（M2，来源：plan-eng、backend-go、对抗 A、对抗 B）
 
